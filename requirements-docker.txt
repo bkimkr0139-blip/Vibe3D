@@ -1,0 +1,29 @@
+# BIO - Lightweight backend dependencies (Docker)
+# Excludes heavy physics engines (TESPy, CoolProp) for microservice architecture
+
+# === Backend API ===
+fastapi==0.111.0
+uvicorn==0.29.0
+pydantic==2.7.1
+pydantic-settings==2.3.0
+python-multipart==0.0.9
+websockets==12.0
+
+# === Database ===
+sqlalchemy==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+
+# === Core numerics ===
+numpy==1.26.4
+scipy==1.13.0
+simpy==4.1.1
+pandas==2.2.2
+
+# === AI/ML (lightweight) ===
+scikit-learn==1.4.2
+
+# === Utilities ===
+PyYAML==6.0.1
+python-dotenv==1.0.1
+httpx==0.27.0

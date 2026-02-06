@@ -1,0 +1,70 @@
+version: "3.8"
+
+services:
+  # PostgreSQL + TimescaleDB
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: bio-postgres
+    environment:
+      POSTGRES_USER: bio
+      POSTGRES_PASSWORD: bio
+      POSTGRES_DB: bio_db
+    ports:
+      - "45432:5432"
+    volumes:
+      - bio_pgdata:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bio -d bio_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - bio_network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bio-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bio:bio@postgres:5432/bio_db
+      HOST: 0.0.0.0
+      PORT: 8000
+      DEBUG: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - bio_network
+
+  # Plotly Dash Frontend (optional)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bio-frontend
+    command: ["python", "frontend/app.py"]
+    environment:
+      API_BASE_URL: http://backend:8000
+    ports:
+      - "8050:8050"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - bio_network
+    profiles:
+      - full
+
+volumes:
+  bio_pgdata:
+
+networks:
+  bio_network:
+    driver: bridge

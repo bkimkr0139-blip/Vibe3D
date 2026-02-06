@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Type checking
+.mypy_cache/
+
+# Data (large files)
+data/raw/*.csv
+data/processed/*.pkl
+data/models/*.joblib
+data/models/*.pt
+
+# Docker
+docker-compose.override.yml
+
+# Unity
+bio-Unity/Library/
+bio-Unity/Temp/
+bio-Unity/Obj/
+bio-Unity/Build/
+bio-Unity/Builds/
+bio-Unity/Logs/
+bio-Unity/UserSettings/
+bio-Unity/MemoryCaptures/
+bio-Unity/Assets/Plugins/
+*.csproj
+*.sln
+*.unityproj
+
+# Misc
+*.log
+*.tmp
