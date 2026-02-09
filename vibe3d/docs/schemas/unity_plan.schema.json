@@ -1,0 +1,822 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Unity Action Plan",
+  "description": "Validated action plan for Unity MCP execution — 63 action types covering all MCP tools",
+  "type": "object",
+  "required": ["project", "scene", "actions"],
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "Unity project name"
+    },
+    "scene": {
+      "type": "string",
+      "description": "Target scene name"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the plan"
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/definitions/action"
+      }
+    }
+  },
+  "definitions": {
+    "vec3": {
+      "type": "object",
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "z": {"type": "number"}
+      },
+      "required": ["x", "y", "z"]
+    },
+    "color": {
+      "type": "object",
+      "properties": {
+        "r": {"type": "number", "minimum": 0, "maximum": 1},
+        "g": {"type": "number", "minimum": 0, "maximum": 1},
+        "b": {"type": "number", "minimum": 0, "maximum": 1},
+        "a": {"type": "number", "minimum": 0, "maximum": 1, "default": 1}
+      },
+      "required": ["r", "g", "b"]
+    },
+    "action": {
+      "type": "object",
+      "required": ["type"],
+      "oneOf": [
+        {"$ref": "#/definitions/create_primitive"},
+        {"$ref": "#/definitions/create_empty"},
+        {"$ref": "#/definitions/modify_object"},
+        {"$ref": "#/definitions/delete_object"},
+        {"$ref": "#/definitions/apply_material"},
+        {"$ref": "#/definitions/create_light"},
+        {"$ref": "#/definitions/set_parent"},
+        {"$ref": "#/definitions/duplicate_object"},
+        {"$ref": "#/definitions/screenshot"},
+        {"$ref": "#/definitions/save_scene"},
+        {"$ref": "#/definitions/execute_menu"},
+        {"$ref": "#/definitions/get_hierarchy"},
+        {"$ref": "#/definitions/import_asset"},
+        {"$ref": "#/definitions/add_component"},
+        {"$ref": "#/definitions/set_component_property"},
+        {"$ref": "#/definitions/create_material"},
+        {"$ref": "#/definitions/assign_material"},
+        {"$ref": "#/definitions/create_prefab"},
+        {"$ref": "#/definitions/instantiate_prefab"},
+        {"$ref": "#/definitions/create_particle_system"},
+        {"$ref": "#/definitions/create_texture"},
+        {"$ref": "#/definitions/move_relative"},
+        {"$ref": "#/definitions/find_objects"},
+        {"$ref": "#/definitions/add_tag"},
+        {"$ref": "#/definitions/set_layer"},
+        {"$ref": "#/definitions/editor_control"},
+        {"$ref": "#/definitions/remove_component"},
+        {"$ref": "#/definitions/set_material_color"},
+        {"$ref": "#/definitions/set_material_property"},
+        {"$ref": "#/definitions/get_material_info"},
+        {"$ref": "#/definitions/modify_prefab"},
+        {"$ref": "#/definitions/get_prefab_info"},
+        {"$ref": "#/definitions/get_prefab_hierarchy"},
+        {"$ref": "#/definitions/create_vfx"},
+        {"$ref": "#/definitions/create_line_renderer"},
+        {"$ref": "#/definitions/set_line_positions"},
+        {"$ref": "#/definitions/create_trail_renderer"},
+        {"$ref": "#/definitions/apply_texture_pattern"},
+        {"$ref": "#/definitions/apply_texture_gradient"},
+        {"$ref": "#/definitions/apply_texture_noise"},
+        {"$ref": "#/definitions/create_sprite"},
+        {"$ref": "#/definitions/create_scene"},
+        {"$ref": "#/definitions/load_scene"},
+        {"$ref": "#/definitions/get_active_scene"},
+        {"$ref": "#/definitions/get_build_settings"},
+        {"$ref": "#/definitions/remove_tag"},
+        {"$ref": "#/definitions/add_layer"},
+        {"$ref": "#/definitions/remove_layer"},
+        {"$ref": "#/definitions/set_active_tool"},
+        {"$ref": "#/definitions/search_assets"},
+        {"$ref": "#/definitions/get_asset_info"},
+        {"$ref": "#/definitions/move_asset"},
+        {"$ref": "#/definitions/rename_asset"},
+        {"$ref": "#/definitions/delete_asset"},
+        {"$ref": "#/definitions/duplicate_asset"},
+        {"$ref": "#/definitions/create_script"},
+        {"$ref": "#/definitions/create_scriptable_object"},
+        {"$ref": "#/definitions/modify_scriptable_object"},
+        {"$ref": "#/definitions/create_shader"},
+        {"$ref": "#/definitions/run_tests"},
+        {"$ref": "#/definitions/refresh_assets"},
+        {"$ref": "#/definitions/read_console"},
+        {"$ref": "#/definitions/set_object_active"},
+        {"$ref": "#/definitions/set_tag_on_object"},
+        {"$ref": "#/definitions/rename_object"}
+      ]
+    },
+
+    "create_primitive": {
+      "type": "object",
+      "required": ["type", "shape", "name"],
+      "properties": {
+        "type": {"const": "create_primitive"},
+        "shape": {"enum": ["Cube", "Sphere", "Cylinder", "Capsule", "Plane", "Quad"]},
+        "name": {"type": "string"},
+        "parent": {"type": "string"},
+        "position": {"$ref": "#/definitions/vec3"},
+        "rotation": {"$ref": "#/definitions/vec3"},
+        "scale": {"$ref": "#/definitions/vec3"}
+      }
+    },
+    "create_empty": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_empty"},
+        "name": {"type": "string"},
+        "parent": {"type": "string"},
+        "position": {"$ref": "#/definitions/vec3"},
+        "rotation": {"$ref": "#/definitions/vec3"}
+      }
+    },
+    "modify_object": {
+      "type": "object",
+      "required": ["type", "target"],
+      "properties": {
+        "type": {"const": "modify_object"},
+        "target": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_tag", "by_id"], "default": "by_name"},
+        "position": {"$ref": "#/definitions/vec3"},
+        "rotation": {"$ref": "#/definitions/vec3"},
+        "scale": {"$ref": "#/definitions/vec3"},
+        "new_name": {"type": "string"},
+        "set_active": {"type": "boolean"},
+        "tag": {"type": "string"},
+        "layer": {"type": "string"},
+        "parent": {"type": "string"}
+      }
+    },
+    "delete_object": {
+      "type": "object",
+      "required": ["type", "target"],
+      "properties": {
+        "type": {"const": "delete_object"},
+        "target": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_tag", "by_id"], "default": "by_name"}
+      }
+    },
+    "apply_material": {
+      "type": "object",
+      "required": ["type", "target"],
+      "properties": {
+        "type": {"const": "apply_material"},
+        "target": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_tag"], "default": "by_name"},
+        "color": {"$ref": "#/definitions/color"},
+        "material_preset": {"type": "string"}
+      }
+    },
+    "create_light": {
+      "type": "object",
+      "required": ["type", "light_type"],
+      "properties": {
+        "type": {"const": "create_light"},
+        "light_type": {"enum": ["Directional", "Point", "Spot", "Area"]},
+        "name": {"type": "string"},
+        "parent": {"type": "string"},
+        "position": {"$ref": "#/definitions/vec3"},
+        "rotation": {"$ref": "#/definitions/vec3"},
+        "intensity": {"type": "number", "minimum": 0},
+        "color": {"$ref": "#/definitions/color"},
+        "range": {"type": "number", "minimum": 0}
+      }
+    },
+    "set_parent": {
+      "type": "object",
+      "required": ["type", "target", "parent"],
+      "properties": {
+        "type": {"const": "set_parent"},
+        "target": {"type": "string"},
+        "parent": {"type": "string"}
+      }
+    },
+    "duplicate_object": {
+      "type": "object",
+      "required": ["type", "target"],
+      "properties": {
+        "type": {"const": "duplicate_object"},
+        "target": {"type": "string"},
+        "new_name": {"type": "string"},
+        "position": {"$ref": "#/definitions/vec3"}
+      }
+    },
+    "screenshot": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "screenshot"},
+        "filename": {"type": "string"},
+        "super_size": {"type": "integer", "minimum": 1, "maximum": 4}
+      }
+    },
+    "save_scene": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "save_scene"}
+      }
+    },
+    "execute_menu": {
+      "type": "object",
+      "required": ["type", "menu_path"],
+      "properties": {
+        "type": {"const": "execute_menu"},
+        "menu_path": {"type": "string"}
+      }
+    },
+    "get_hierarchy": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "get_hierarchy"},
+        "target": {"type": "string"}
+      }
+    },
+    "import_asset": {
+      "type": "object",
+      "required": ["type", "source_path"],
+      "properties": {
+        "type": {"const": "import_asset"},
+        "source_path": {"type": "string"},
+        "filename": {"type": "string"},
+        "destination": {"type": "string"}
+      }
+    },
+    "add_component": {
+      "type": "object",
+      "required": ["type", "target", "component_type"],
+      "properties": {
+        "type": {"const": "add_component"},
+        "target": {"type": "string"},
+        "component_type": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"},
+        "properties": {"type": "object"}
+      }
+    },
+    "set_component_property": {
+      "type": "object",
+      "required": ["type", "target", "component_type", "property", "value"],
+      "properties": {
+        "type": {"const": "set_component_property"},
+        "target": {"type": "string"},
+        "component_type": {"type": "string"},
+        "property": {"type": "string"},
+        "value": {},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "create_material": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_material"},
+        "name": {"type": "string"},
+        "shader": {"type": "string"},
+        "color": {"$ref": "#/definitions/color"},
+        "properties": {"type": "object"}
+      }
+    },
+    "assign_material": {
+      "type": "object",
+      "required": ["type", "target", "material_path"],
+      "properties": {
+        "type": {"const": "assign_material"},
+        "target": {"type": "string"},
+        "material_path": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"},
+        "slot": {"type": "integer", "minimum": 0}
+      }
+    },
+    "create_prefab": {
+      "type": "object",
+      "required": ["type", "target"],
+      "properties": {
+        "type": {"const": "create_prefab"},
+        "target": {"type": "string"},
+        "prefab_path": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "instantiate_prefab": {
+      "type": "object",
+      "required": ["type", "prefab_path"],
+      "properties": {
+        "type": {"const": "instantiate_prefab"},
+        "prefab_path": {"type": "string"},
+        "name": {"type": "string"},
+        "parent": {"type": "string"},
+        "position": {"$ref": "#/definitions/vec3"},
+        "rotation": {"$ref": "#/definitions/vec3"},
+        "scale": {"$ref": "#/definitions/vec3"}
+      }
+    },
+    "create_particle_system": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_particle_system"},
+        "name": {"type": "string"},
+        "parent": {"type": "string"},
+        "position": {"$ref": "#/definitions/vec3"},
+        "properties": {"type": "object"}
+      }
+    },
+    "create_texture": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_texture"},
+        "name": {"type": "string"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "pattern": {"enum": ["checkerboard", "stripes", "stripes_h", "stripes_v", "stripes_diag", "dots", "grid", "brick"]},
+        "fill_color": {
+          "oneOf": [
+            {"$ref": "#/definitions/color"},
+            {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 4}
+          ]
+        },
+        "path": {"type": "string"},
+        "target": {"type": "string"}
+      }
+    },
+    "move_relative": {
+      "type": "object",
+      "required": ["type", "target", "direction", "distance"],
+      "properties": {
+        "type": {"const": "move_relative"},
+        "target": {"type": "string"},
+        "direction": {"enum": ["left", "right", "up", "down", "forward", "back"]},
+        "distance": {"type": "number", "minimum": 0},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "find_objects": {
+      "type": "object",
+      "required": ["type", "search_term"],
+      "properties": {
+        "type": {"const": "find_objects"},
+        "search_term": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_tag", "by_layer", "by_component"], "default": "by_name"}
+      }
+    },
+    "add_tag": {
+      "type": "object",
+      "required": ["type", "tag_name"],
+      "properties": {
+        "type": {"const": "add_tag"},
+        "tag_name": {"type": "string"}
+      }
+    },
+    "set_layer": {
+      "type": "object",
+      "required": ["type", "target", "layer"],
+      "properties": {
+        "type": {"const": "set_layer"},
+        "target": {"type": "string"},
+        "layer": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "editor_control": {
+      "type": "object",
+      "required": ["type", "action"],
+      "properties": {
+        "type": {"const": "editor_control"},
+        "action": {"enum": ["play", "pause", "stop"]}
+      }
+    },
+
+    "remove_component": {
+      "type": "object",
+      "required": ["type", "target", "component_type"],
+      "properties": {
+        "type": {"const": "remove_component"},
+        "target": {"type": "string"},
+        "component_type": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "set_material_color": {
+      "type": "object",
+      "required": ["type", "material_path", "color"],
+      "properties": {
+        "type": {"const": "set_material_color"},
+        "material_path": {"type": "string"},
+        "color": {"$ref": "#/definitions/color"},
+        "property": {"type": "string", "default": "_BaseColor"}
+      }
+    },
+    "set_material_property": {
+      "type": "object",
+      "required": ["type", "material_path", "property", "value"],
+      "properties": {
+        "type": {"const": "set_material_property"},
+        "material_path": {"type": "string"},
+        "property": {"type": "string"},
+        "value": {}
+      }
+    },
+    "get_material_info": {
+      "type": "object",
+      "required": ["type", "material_path"],
+      "properties": {
+        "type": {"const": "get_material_info"},
+        "material_path": {"type": "string"}
+      }
+    },
+    "modify_prefab": {
+      "type": "object",
+      "required": ["type", "prefab_path"],
+      "properties": {
+        "type": {"const": "modify_prefab"},
+        "prefab_path": {"type": "string"},
+        "create_child": {
+          "oneOf": [
+            {"type": "object"},
+            {"type": "array", "items": {"type": "object"}}
+          ]
+        },
+        "components_to_add": {"type": "array", "items": {"type": "string"}},
+        "components_to_remove": {"type": "array", "items": {"type": "string"}},
+        "position": {"$ref": "#/definitions/vec3"},
+        "rotation": {"$ref": "#/definitions/vec3"},
+        "scale": {"$ref": "#/definitions/vec3"}
+      }
+    },
+    "get_prefab_info": {
+      "type": "object",
+      "required": ["type", "prefab_path"],
+      "properties": {
+        "type": {"const": "get_prefab_info"},
+        "prefab_path": {"type": "string"}
+      }
+    },
+    "get_prefab_hierarchy": {
+      "type": "object",
+      "required": ["type", "prefab_path"],
+      "properties": {
+        "type": {"const": "get_prefab_hierarchy"},
+        "prefab_path": {"type": "string"}
+      }
+    },
+    "create_vfx": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_vfx"},
+        "name": {"type": "string"},
+        "target": {"type": "string"},
+        "properties": {"type": "object"}
+      }
+    },
+    "create_line_renderer": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_line_renderer"},
+        "name": {"type": "string"},
+        "target": {"type": "string"},
+        "positions": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/vec3"}
+        },
+        "width": {"type": "number", "minimum": 0},
+        "color": {"$ref": "#/definitions/color"},
+        "properties": {"type": "object"}
+      }
+    },
+    "set_line_positions": {
+      "type": "object",
+      "required": ["type", "target", "positions"],
+      "properties": {
+        "type": {"const": "set_line_positions"},
+        "target": {"type": "string"},
+        "positions": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/vec3"}
+        },
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "create_trail_renderer": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_trail_renderer"},
+        "name": {"type": "string"},
+        "target": {"type": "string"},
+        "time": {"type": "number", "minimum": 0},
+        "width": {"type": "number", "minimum": 0},
+        "color": {"$ref": "#/definitions/color"},
+        "properties": {"type": "object"}
+      }
+    },
+    "apply_texture_pattern": {
+      "type": "object",
+      "required": ["type", "pattern"],
+      "properties": {
+        "type": {"const": "apply_texture_pattern"},
+        "path": {"type": "string"},
+        "target": {"type": "string"},
+        "name": {"type": "string"},
+        "pattern": {"enum": ["checkerboard", "stripes", "stripes_h", "stripes_v", "stripes_diag", "dots", "grid", "brick"]},
+        "palette": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "number"}}
+        },
+        "pattern_size": {"type": "integer", "minimum": 1},
+        "fill_color": {
+          "oneOf": [
+            {"$ref": "#/definitions/color"},
+            {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 4}
+          ]
+        }
+      }
+    },
+    "apply_texture_gradient": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"const": "apply_texture_gradient"},
+        "path": {"type": "string"},
+        "gradient_type": {"enum": ["linear", "radial"], "default": "linear"},
+        "palette": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "number"}}
+        },
+        "gradient_angle": {"type": "number"}
+      }
+    },
+    "apply_texture_noise": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"const": "apply_texture_noise"},
+        "path": {"type": "string"},
+        "noise_scale": {"type": "number", "minimum": 0},
+        "octaves": {"type": "integer", "minimum": 1, "maximum": 8},
+        "palette": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "number"}}
+        }
+      }
+    },
+    "create_sprite": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"const": "create_sprite"},
+        "path": {"type": "string"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "fill_color": {"$ref": "#/definitions/color"},
+        "pixels": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "integer"}}
+        }
+      }
+    },
+    "create_scene": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_scene"},
+        "name": {"type": "string"},
+        "path": {"type": "string"}
+      }
+    },
+    "load_scene": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "load_scene"},
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "build_index": {"type": "integer"}
+      }
+    },
+    "get_active_scene": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "get_active_scene"}
+      }
+    },
+    "get_build_settings": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "get_build_settings"}
+      }
+    },
+    "remove_tag": {
+      "type": "object",
+      "required": ["type", "tag_name"],
+      "properties": {
+        "type": {"const": "remove_tag"},
+        "tag_name": {"type": "string"}
+      }
+    },
+    "add_layer": {
+      "type": "object",
+      "required": ["type", "layer_name"],
+      "properties": {
+        "type": {"const": "add_layer"},
+        "layer_name": {"type": "string"}
+      }
+    },
+    "remove_layer": {
+      "type": "object",
+      "required": ["type", "layer_name"],
+      "properties": {
+        "type": {"const": "remove_layer"},
+        "layer_name": {"type": "string"}
+      }
+    },
+    "set_active_tool": {
+      "type": "object",
+      "required": ["type", "tool_name"],
+      "properties": {
+        "type": {"const": "set_active_tool"},
+        "tool_name": {"type": "string"}
+      }
+    },
+    "search_assets": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "search_assets"},
+        "path": {"type": "string", "default": "Assets"},
+        "search_pattern": {"type": "string"},
+        "filter_type": {"type": "string"},
+        "page_size": {"type": "integer"},
+        "page_number": {"type": "integer"}
+      }
+    },
+    "get_asset_info": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"const": "get_asset_info"},
+        "path": {"type": "string"}
+      }
+    },
+    "move_asset": {
+      "type": "object",
+      "required": ["type", "path", "destination"],
+      "properties": {
+        "type": {"const": "move_asset"},
+        "path": {"type": "string"},
+        "destination": {"type": "string"}
+      }
+    },
+    "rename_asset": {
+      "type": "object",
+      "required": ["type", "path", "new_name"],
+      "properties": {
+        "type": {"const": "rename_asset"},
+        "path": {"type": "string"},
+        "new_name": {"type": "string"}
+      }
+    },
+    "delete_asset": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"const": "delete_asset"},
+        "path": {"type": "string"}
+      }
+    },
+    "duplicate_asset": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"const": "duplicate_asset"},
+        "path": {"type": "string"},
+        "destination": {"type": "string"}
+      }
+    },
+    "create_script": {
+      "type": "object",
+      "required": ["type", "name", "path"],
+      "properties": {
+        "type": {"const": "create_script"},
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "contents": {"type": "string"},
+        "script_type": {"type": "string"},
+        "namespace": {"type": "string"}
+      }
+    },
+    "create_scriptable_object": {
+      "type": "object",
+      "required": ["type", "type_name", "asset_name"],
+      "properties": {
+        "type": {"const": "create_scriptable_object"},
+        "type_name": {"type": "string"},
+        "asset_name": {"type": "string"},
+        "folder_path": {"type": "string"},
+        "patches": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "modify_scriptable_object": {
+      "type": "object",
+      "required": ["type", "target", "patches"],
+      "properties": {
+        "type": {"const": "modify_scriptable_object"},
+        "target": {"type": "string"},
+        "patches": {"type": "array", "items": {"type": "object"}},
+        "dry_run": {"type": "boolean"}
+      }
+    },
+    "create_shader": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"const": "create_shader"},
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "contents": {"type": "string"}
+      }
+    },
+    "run_tests": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "run_tests"},
+        "mode": {"enum": ["EditMode", "PlayMode"], "default": "EditMode"},
+        "test_names": {"type": "array", "items": {"type": "string"}},
+        "category_names": {"type": "array", "items": {"type": "string"}},
+        "assembly_names": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "refresh_assets": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "refresh_assets"},
+        "scope": {"enum": ["assets", "scripts", "all"], "default": "all"},
+        "mode": {"enum": ["if_dirty", "force"], "default": "if_dirty"},
+        "compile": {"enum": ["none", "request"], "default": "none"}
+      }
+    },
+    "read_console": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "read_console"},
+        "count": {"type": "integer", "minimum": 1},
+        "types": {
+          "type": "array",
+          "items": {"enum": ["error", "warning", "log", "all"]}
+        },
+        "filter_text": {"type": "string"}
+      }
+    },
+    "set_object_active": {
+      "type": "object",
+      "required": ["type", "target", "active"],
+      "properties": {
+        "type": {"const": "set_object_active"},
+        "target": {"type": "string"},
+        "active": {"type": "boolean"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "set_tag_on_object": {
+      "type": "object",
+      "required": ["type", "target", "tag"],
+      "properties": {
+        "type": {"const": "set_tag_on_object"},
+        "target": {"type": "string"},
+        "tag": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "rename_object": {
+      "type": "object",
+      "required": ["type", "target", "new_name"],
+      "properties": {
+        "type": {"const": "rename_object"},
+        "target": {"type": "string"},
+        "new_name": {"type": "string"},
+        "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    }
+  },
+  "additionalProperties": false
+}

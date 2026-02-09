@@ -117,3 +117,41 @@ class Scenario(Base):
     plant_type = Column(String(50))
     difficulty = Column(String(20), default="normal")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FermentationSensorData(Base):
+    """Time-series sensor data for fermentation vessels."""
+    __tablename__ = "fermentation_sensor_data"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    time = Column(DateTime(timezone=True), nullable=False, index=True)
+    simulation_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    simulation_time = Column(Float, nullable=False)
+    vessel = Column(String(50), nullable=False)
+
+    # Fermentor sensors
+    biomass = Column(Float)           # g/L
+    substrate = Column(Float)         # g/L
+    ph = Column(Float)
+    dissolved_oxygen = Column(Float)  # mg/L
+    temperature = Column(Float)       # °C
+    volume = Column(Float)            # L
+    rpm = Column(Float)
+    aeration_vvm = Column(Float)
+    jacket_temp = Column(Float)       # °C
+
+    # Sensor readings (with noise)
+    sensor_ph = Column(Float)
+    sensor_do = Column(Float)
+    sensor_temp = Column(Float)
+    sensor_pressure = Column(Float)
+
+    # Dosing
+    valve_acid = Column(Boolean)
+    valve_base = Column(Boolean)
+    total_acid_added = Column(Float)  # L
+    total_base_added = Column(Float)  # L
+
+    # Anomaly detection
+    anomaly_detected = Column(Boolean, default=False)
+    anomaly_severity = Column(String(20), nullable=True)

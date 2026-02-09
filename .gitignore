@@ -67,6 +67,16 @@ bio-Unity/Assets/Plugins/
 *.sln
 *.unityproj
 
+# Claude Code
+.claude/
+
+# Vibe3D runtime
+vibe3d/logs/
+vibe3d/assets/generated/
+vibe3d/assets/import/
+
 # Misc
 *.log
 *.tmp
+nul
+hierarchy_test.json

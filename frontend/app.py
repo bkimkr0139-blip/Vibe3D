@@ -24,6 +24,7 @@ app.layout = dbc.Container(
                     dbc.Nav(
                         [
                             dbc.NavItem(dbc.NavLink("Monitoring", href="/", active="exact")),
+                            dbc.NavItem(dbc.NavLink("Fermentation", href="/fermentation")),
                             dbc.NavItem(dbc.NavLink("Training", href="/training")),
                             dbc.NavItem(dbc.NavLink("Maintenance", href="/maintenance")),
                         ],

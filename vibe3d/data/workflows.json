@@ -1,0 +1,287 @@
+[
+  {
+    "id": "63bce2a6-52eb-4a21-acfe-0866ba9033cf",
+    "name": "설비 배치",
+    "description": "장비를 지정 위치에 배치하고 재질을 적용합니다.",
+    "steps": [
+      {
+        "prompt": "장비 이름을 입력하세요",
+        "param_name": "name",
+        "param_type": "text",
+        "options": null,
+        "default_value": "Equipment_0"
+      },
+      {
+        "prompt": "배치 위치 (x, y, z)",
+        "param_name": "position",
+        "param_type": "position",
+        "options": null,
+        "default_value": "0,0,0"
+      },
+      {
+        "prompt": "재질을 선택하세요",
+        "param_name": "material",
+        "param_type": "select",
+        "options": [
+          "stainless",
+          "steel",
+          "copper",
+          "concrete"
+        ],
+        "default_value": "stainless"
+      }
+    ],
+    "plan_template": {
+      "project": "My project",
+      "scene": "bio-plants",
+      "description": "설비 배치: {name}",
+      "actions": [
+        {
+          "type": "create_primitive",
+          "shape": "Cylinder",
+          "name": "{name}",
+          "position": "{position}",
+          "scale": {
+            "x": 1,
+            "y": 2,
+            "z": 1
+          }
+        },
+        {
+          "type": "apply_material",
+          "target": "{name}",
+          "color": "{material}"
+        }
+      ]
+    },
+    "created_at": "2026-02-07T00:32:17.482546+00:00"
+  },
+  {
+    "id": "9d2e9098-4263-491d-ad21-382be7b87a4b",
+    "name": "센서 추가",
+    "description": "장비 근처에 센서 마커를 생성합니다.",
+    "steps": [
+      {
+        "prompt": "센서 이름을 입력하세요",
+        "param_name": "sensor_name",
+        "param_type": "text",
+        "options": null,
+        "default_value": "Sensor_0"
+      },
+      {
+        "prompt": "대상 장비 이름",
+        "param_name": "target_equipment",
+        "param_type": "text",
+        "options": null,
+        "default_value": "Equipment_0"
+      },
+      {
+        "prompt": "센서 유형을 선택하세요",
+        "param_name": "sensor_type",
+        "param_type": "select",
+        "options": [
+          "pH",
+          "DO",
+          "Temp",
+          "Pressure"
+        ],
+        "default_value": "pH"
+      }
+    ],
+    "plan_template": {
+      "project": "My project",
+      "scene": "bio-plants",
+      "description": "센서 추가: {sensor_name} ({sensor_type}) -> {target_equipment}",
+      "actions": [
+        {
+          "type": "create_empty",
+          "name": "{sensor_name}",
+          "parent": "{target_equipment}",
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        {
+          "type": "modify_object",
+          "target": "{sensor_name}",
+          "search_method": "by_name",
+          "position": {
+            "x": 0.5,
+            "y": 1.0,
+            "z": 0
+          }
+        }
+      ]
+    },
+    "created_at": "2026-02-07T00:32:17.482546+00:00"
+  },
+  {
+    "id": "35aa356e-08c0-4ea8-854d-0132e4bf3896",
+    "name": "배관 생성",
+    "description": "두 장비 사이에 배관을 생성합니다.",
+    "steps": [
+      {
+        "prompt": "출발 장비 이름",
+        "param_name": "from_equipment",
+        "param_type": "text",
+        "options": null,
+        "default_value": "Equipment_A"
+      },
+      {
+        "prompt": "도착 장비 이름",
+        "param_name": "to_equipment",
+        "param_type": "text",
+        "options": null,
+        "default_value": "Equipment_B"
+      },
+      {
+        "prompt": "배관 직경 (m)",
+        "param_name": "pipe_diameter",
+        "param_type": "number",
+        "options": null,
+        "default_value": "0.1"
+      },
+      {
+        "prompt": "배관 색상을 선택하세요",
+        "param_name": "color",
+        "param_type": "select",
+        "options": [
+          "biogas_yellow",
+          "steam_white",
+          "cooling_blue"
+        ],
+        "default_value": "steam_white"
+      }
+    ],
+    "plan_template": {
+      "project": "My project",
+      "scene": "bio-plants",
+      "description": "배관 생성: {from_equipment} -> {to_equipment}",
+      "actions": [
+        {
+          "type": "create_primitive",
+          "shape": "Cylinder",
+          "name": "Pipe_{from_equipment}_to_{to_equipment}",
+          "position": {
+            "x": 0,
+            "y": 1,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 90
+          },
+          "scale": {
+            "x": "{pipe_diameter}",
+            "y": 1,
+            "z": "{pipe_diameter}"
+          }
+        },
+        {
+          "type": "apply_material",
+          "target": "Pipe_{from_equipment}_to_{to_equipment}",
+          "color": "{color}"
+        }
+      ]
+    },
+    "created_at": "2026-02-07T00:32:17.482546+00:00"
+  },
+  {
+    "id": "1938c256-e3b2-4d1a-81fb-5d735bfdbca8",
+    "name": "발효설비 풀 빌드",
+    "description": "발효 용기, 공급 라인, 센서 마커를 한 번에 생성합니다.",
+    "steps": [
+      {
+        "prompt": "용기 유형을 선택하세요",
+        "param_name": "vessel_type",
+        "param_type": "select",
+        "options": [
+          "70L",
+          "700L",
+          "7KL"
+        ],
+        "default_value": "700L"
+      },
+      {
+        "prompt": "배치 위치 (x, y, z)",
+        "param_name": "position",
+        "param_type": "position",
+        "options": null,
+        "default_value": "0,0,0"
+      }
+    ],
+    "plan_template": {
+      "project": "My project",
+      "scene": "bio-plants",
+      "description": "발효설비 풀 빌드: Fermentor_{vessel_type}",
+      "actions": [
+        {
+          "type": "create_primitive",
+          "shape": "Cylinder",
+          "name": "Fermentor_{vessel_type}",
+          "position": "{position}",
+          "scale": {
+            "x": 1,
+            "y": 2,
+            "z": 1
+          }
+        },
+        {
+          "type": "create_primitive",
+          "shape": "Cylinder",
+          "name": "FeedLine_{vessel_type}",
+          "parent": "Fermentor_{vessel_type}",
+          "position": {
+            "x": -0.6,
+            "y": 1.5,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 45
+          },
+          "scale": {
+            "x": 0.05,
+            "y": 0.5,
+            "z": 0.05
+          }
+        },
+        {
+          "type": "create_empty",
+          "name": "Sensor_pH_{vessel_type}",
+          "parent": "Fermentor_{vessel_type}",
+          "position": {
+            "x": 0.5,
+            "y": 1.0,
+            "z": 0
+          }
+        },
+        {
+          "type": "create_empty",
+          "name": "Sensor_DO_{vessel_type}",
+          "parent": "Fermentor_{vessel_type}",
+          "position": {
+            "x": 0.5,
+            "y": 0.5,
+            "z": 0
+          }
+        },
+        {
+          "type": "create_empty",
+          "name": "Sensor_Temp_{vessel_type}",
+          "parent": "Fermentor_{vessel_type}",
+          "position": {
+            "x": -0.5,
+            "y": 0.8,
+            "z": 0
+          }
+        }
+      ]
+    },
+    "created_at": "2026-02-07T00:32:17.482546+00:00"
+  }
+]

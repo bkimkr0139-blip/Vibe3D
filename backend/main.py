@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.core.config import settings
 from backend.api.routes import simulation, websocket, scenarios, controls, health
+from backend.api.routes import fermentation, fermentation_ws
 
 
 @asynccontextmanager
@@ -59,4 +60,14 @@ app.include_router(
     controls.router,
     prefix=f"{settings.API_V1_STR}/controls",
     tags=["controls"],
+)
+app.include_router(
+    fermentation.router,
+    prefix=f"{settings.API_V1_STR}/fermentation",
+    tags=["fermentation"],
+)
+app.include_router(
+    fermentation_ws.router,
+    prefix=f"{settings.API_V1_STR}/fermentation-ws",
+    tags=["fermentation-ws"],
 )

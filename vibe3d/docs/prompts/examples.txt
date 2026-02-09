@@ -1,0 +1,41 @@
+Vibe3D — Natural Language Command Examples
+==========================================
+
+Korean (한국어)
+--------------
+1. "가로 20m 세로 10m 바닥을 만들고, 회색 콘크리트 재질을 적용해줘."
+2. "탱크를 (2,0,3)에 배치하고 이름을 Tank_A로 해줘."
+3. "Tank_A에 온도 센서 포인트 3개를 표시용 empty object로 만들어줘."
+4. "조명을 4개 만들고 천장 높이 5m에 격자로 배치해줘."
+5. "현재 씬을 스크린샷 찍어줘."
+6. "빨간색 큐브를 원점에 만들어줘."
+7. "바닥에 나무 재질을 적용해줘."
+8. "구를 하나 만들고 스테인리스 색상으로 해줘."
+
+English
+-------
+1. "Create a 20m x 10m floor with gray concrete material."
+2. "Place a tank at (2,0,3) and name it Tank_A."
+3. "Create 3 empty objects as temperature sensor points on Tank_A."
+4. "Create 4 lights and arrange them in a grid at ceiling height 5m."
+5. "Take a screenshot of the current scene."
+6. "Create a red cube at the origin."
+7. "Apply wood material to the floor."
+8. "Create a sphere with stainless steel color."
+
+Template-Supported Patterns (No API Key Required)
+--------------------------------------------------
+- Floor: "[width]m x [depth]m 바닥" / "floor [w] x [d]"
+- Primitives: "큐브/구/실린더/탱크 + position + color"
+- Lights: "조명 N개 + height"
+- Colors: 빨간/파란/초록/회색/흰/콘크리트/스테인리스/메탈/나무/구리/금
+         red/blue/green/gray/white/concrete/stainless/steel/metal/wood/copper/gold
+
+LLM-Powered (Requires ANTHROPIC_API_KEY)
+-----------------------------------------
+Any complex command that doesn't match templates will be sent to Claude
+for JSON plan generation. This enables:
+- Multi-object creation with relationships
+- Complex layouts and arrangements
+- Material combinations
+- Scene modifications by description

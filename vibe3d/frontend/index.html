@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vibe3D Unity Accelerator</title>
+    <link rel="stylesheet" href="/static/style.css?v=6">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div class="app">
+        <!-- Header / Toolbar -->
+        <header class="header">
+            <div class="header-left">
+                <h1 class="logo">Vibe3D</h1>
+                <span class="subtitle">Unity Accelerator</span>
+            </div>
+            <div class="header-center">
+                <div class="toolbar-actions">
+                    <button class="toolbar-btn" onclick="takeScreenshot()" title="Screenshot">
+                        <span class="tb-icon">&#128247;</span>
+                    </button>
+                    <button class="toolbar-btn" onclick="saveScene()" title="Save Scene">
+                        <span class="tb-icon">&#128190;</span>
+                    </button>
+                    <button class="toolbar-btn" onclick="undoLast()" title="Undo">
+                        <span class="tb-icon">&#8630;</span>
+                    </button>
+                    <button class="toolbar-btn" onclick="refreshHierarchy()" title="Refresh Hierarchy">
+                        <span class="tb-icon">&#8635;</span>
+                    </button>
+                    <div class="toolbar-sep"></div>
+                    <button class="toolbar-btn" onclick="togglePlay()" title="Play/Stop" id="playBtn">
+                        <span class="tb-icon">&#9654;</span>
+                    </button>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="status-pill" id="mcpStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-label">MCP</span>
+                </div>
+                <div class="status-pill" id="nluStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-label">NLU</span>
+                </div>
+                <button class="icon-btn" onclick="connectMCP()" title="Reconnect MCP">&#8635;</button>
+            </div>
+        </header>
+
+        <!-- Main 3-column layout -->
+        <main class="main-layout">
+            <!-- LEFT PANEL: Scene Explorer + Drawing Viewer -->
+            <aside class="panel panel-left" id="panelLeft">
+                <div class="panel-tabs">
+                    <button class="ptab active" data-panel="explorer" onclick="switchPanel('left','explorer')">Explorer</button>
+                    <button class="ptab" data-panel="drawing" onclick="switchPanel('left','drawing')">Drawing</button>
+                    <button class="ptab" data-panel="presets" onclick="switchPanel('left','presets')">Presets</button>
+                </div>
+
+                <!-- Explorer -->
+                <div class="panel-body active" id="left-explorer">
+                    <!-- Navigation bar -->
+                    <div class="file-nav">
+                        <button class="icon-btn" onclick="navigateUp()" title="Up (Alt+Up)">&#8593;</button>
+                        <button class="icon-btn" onclick="navigateHome()" title="Home">&#127968;</button>
+                        <div class="file-path-bar">
+                            <input type="text" id="filePathInput" class="file-path-input"
+                                   placeholder="Enter path..."
+                                   spellcheck="false"
+                                   onkeydown="if(event.key==='Enter'){navigateToPath(this.value);}"
+                            >
+                            <button class="icon-btn path-go-btn" onclick="navigateToPath(document.getElementById('filePathInput').value)" title="Go">&#8626;</button>
+                        </div>
+                        <button class="icon-btn pin-btn" id="pinCurrentBtn" onclick="togglePinCurrent()" title="Bookmark">&#9734;</button>
+                    </div>
+                    <!-- Favorites / Quick Access -->
+                    <div class="file-favorites" id="fileFavorites">
+                        <div class="fav-header">
+                            <span class="fav-title">Bookmarks</span>
+                            <button class="icon-btn fav-toggle" id="favToggle" onclick="toggleFavorites()" title="Toggle">&#9660;</button>
+                        </div>
+                        <div class="fav-list" id="favList"></div>
+                        <div class="fav-drives" id="favDrives"></div>
+                    </div>
+                    <!-- File list -->
+                    <div class="file-list" id="fileList"></div>
+                    <div class="selection-bar" id="selectionBar" style="display:none">
+                        <span class="sel-count" id="selCount">0</span>
+                        <button class="btn btn-xs btn-primary" onclick="compositeAnalyze()">Analyze</button>
+                        <button class="btn btn-xs" onclick="deselectAllFiles()">Clear</button>
+                    </div>
+                </div>
+
+                <!-- Drawing Viewer -->
+                <div class="panel-body" id="left-drawing">
+                    <div class="drawing-viewer">
+                        <div class="drawing-drop" id="drawingDrop" onclick="document.getElementById('drawingFile').click()">
+                            <div class="drop-icon">&#128196;</div>
+                            <p>Drop a P&ID / Layout image here<br>or click to browse</p>
+                            <input type="file" id="drawingFile" accept="image/*" style="display:none" onchange="loadDrawing(event)">
+                        </div>
+                        <div class="drawing-preview" id="drawingPreview" style="display:none">
+                            <img id="drawingImage" src="" alt="Drawing">
+                            <div class="drawing-actions">
+                                <button class="btn btn-sm btn-primary" onclick="analyzeDrawing()">Analyze with AI</button>
+                                <button class="btn btn-sm" onclick="clearDrawing()">Clear</button>
+                            </div>
+                        </div>
+                        <div class="drawing-result" id="drawingResult" style="display:none">
+                            <pre id="drawingData" class="code-block"></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Presets -->
+                <div class="panel-body" id="left-presets">
+                    <div class="preset-list" id="presetList"></div>
+                </div>
+
+                <div class="panel-resize" onmousedown="startResize(event,'left')"></div>
+            </aside>
+
+            <!-- CENTER: Scene Viewer (top) + AI Chat (bottom) -->
+            <div class="panel panel-center">
+                <!-- Scene Viewer -->
+                <div class="scene-viewer" id="sceneViewer">
+                    <div class="scene-toolbar">
+                        <span class="scene-label">Scene View</span>
+                        <div class="view-toggle">
+                            <button class="view-toggle-btn active" data-mode="3d" onclick="setSceneViewMode('3d')" title="Interactive 3D">3D</button>
+                            <button class="view-toggle-btn" data-mode="screenshot" onclick="setSceneViewMode('screenshot')" title="Screenshot">IMG</button>
+                        </div>
+                        <div style="flex:1"></div>
+                        <button class="icon-btn" onclick="refreshSceneView()" title="Refresh" id="sceneRefreshBtn">&#8635;</button>
+                        <button class="icon-btn" onclick="toggleSceneAutoRefresh()" title="Auto-refresh" id="autoRefreshBtn">&#9201;</button>
+                    </div>
+                    <div class="scene-canvas" id="sceneCanvas">
+                        <!-- 3D View (default) -->
+                        <div id="scene3dContainer" class="scene-3d-container"></div>
+                        <!-- Screenshot View -->
+                        <div id="screenshotContainer" class="screenshot-container" style="display:none">
+                            <img id="sceneImage" src="" alt="Scene" style="display:none">
+                            <div class="scene-placeholder" id="scenePlaceholder">
+                                <div class="placeholder-icon">&#127758;</div>
+                                <p>Click refresh to capture scene</p>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Minimap overlay -->
+                    <div class="minimap-overlay" id="minimapOverlay">
+                        <canvas id="planMinimap" width="200" height="120"></canvas>
+                    </div>
+                </div>
+
+                <!-- Execution Progress -->
+                <div class="exec-progress" id="execProgress" style="display:none">
+                    <div class="exec-header">
+                        <span class="exec-spinner" id="execSpinner">&#9881;</span>
+                        <span class="exec-label" id="execLabel">Processing...</span>
+                        <span class="exec-count" id="execCount">0/0</span>
+                    </div>
+                    <div class="exec-bar"><div class="exec-fill" id="execFill"></div></div>
+                    <div class="exec-steps" id="execSteps"></div>
+                </div>
+
+                <!-- AI Chat Panel -->
+                <div class="chat-panel" id="chatPanel">
+                    <div class="chat-header">
+                        <span class="chat-title">AI Assistant</span>
+                        <button class="icon-btn" onclick="clearChat()" title="Clear chat">&#128465;</button>
+                    </div>
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="chat-welcome">
+                            <p>Unity 작업을 자연어로 입력하세요. AI가 명령을 분석하고 실행 계획을 보여드립니다.</p>
+                            <div class="welcome-examples">
+                                <span class="example-chip" onclick="insertExample(this)">10m x 10m 바닥 만들어줘</span>
+                                <span class="example-chip" onclick="insertExample(this)">건물 외부 프레임 색상을 파란색으로</span>
+                                <span class="example-chip" onclick="insertExample(this)">씬에 오브젝트가 몇 개 있어?</span>
+                                <span class="example-chip" onclick="insertExample(this)">빨간색 큐브 3개 배치해줘</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <div class="suggest-dropdown" id="suggestDropdown" style="display:none"></div>
+                        <textarea
+                            id="chatInput"
+                            placeholder="자연어 명령을 입력하세요... (Enter로 전송)"
+                            rows="1"
+                            spellcheck="false"
+                        ></textarea>
+                        <button class="chat-send" onclick="sendChat()" id="chatSendBtn" title="Send (Enter)">
+                            <span>&#9654;</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT PANEL: Component Library + Hierarchy + Inspector -->
+            <aside class="panel panel-right" id="panelRight">
+                <div class="panel-resize panel-resize-left" onmousedown="startResize(event,'right')"></div>
+                <div class="panel-tabs">
+                    <button class="ptab active" data-panel="hierarchy" onclick="switchPanel('right','hierarchy')">Hierarchy</button>
+                    <button class="ptab" data-panel="components" onclick="switchPanel('right','components')">Components</button>
+                    <button class="ptab" data-panel="jobs" onclick="switchPanel('right','jobs')">Jobs</button>
+                </div>
+
+                <!-- Hierarchy + Inspector -->
+                <div class="panel-body active" id="right-hierarchy">
+                    <div class="hierarchy-section">
+                        <div class="section-bar">
+                            <input type="text" id="hierarchySearch" class="search-input" placeholder="Search..." oninput="filterHierarchy()">
+                            <button class="icon-btn" onclick="refreshHierarchy()" title="Refresh">&#8635;</button>
+                        </div>
+                        <div class="hierarchy-tree" id="hierarchyTree">
+                            <div class="empty-state"><p>Click refresh to load</p></div>
+                        </div>
+                    </div>
+                    <div class="inspector-section" id="inspectorSection">
+                        <div class="section-bar">
+                            <span class="section-title">Inspector</span>
+                        </div>
+                        <div class="inspector-body" id="inspectorBody">
+                            <div class="empty-state"><p>Select an object</p></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Component Library -->
+                <div class="panel-body" id="right-components">
+                    <div class="component-library" id="componentLibrary">
+                        <div class="empty-state"><p>Loading components...</p></div>
+                    </div>
+                </div>
+
+                <!-- Jobs / Console -->
+                <div class="panel-body" id="right-jobs">
+                    <div class="jobs-tabs">
+                        <button class="jtab active" onclick="switchJobTab('jobs')">Jobs</button>
+                        <button class="jtab" onclick="switchJobTab('console')">Console</button>
+                    </div>
+                    <div class="jtab-content active" id="jtab-jobs">
+                        <div class="job-list" id="jobLog">
+                            <div class="empty-state"><p>No jobs yet</p></div>
+                        </div>
+                    </div>
+                    <div class="jtab-content" id="jtab-console">
+                        <div class="console-log" id="consoleLog">
+                            <div class="empty-state"><p>Click refresh to load</p></div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <span class="f-left">
+                MCP: <span id="mcpUrlFooter">-</span> |
+                Session: <span id="sessionFooter">-</span>
+            </span>
+            <span class="f-center" id="footerStatus"></span>
+            <span class="f-right">
+                <span id="jobCountFooter">0</span> jobs |
+                <kbd>Enter</kbd> send
+            </span>
+        </footer>
+    </div>
+
+    <!-- Preset Param Dialog -->
+    <div class="modal-overlay" id="presetDialog" style="display:none" onclick="hidePresetDialog()">
+        <div class="modal-content modal-sm" onclick="event.stopPropagation()">
+            <h3 id="presetDialogTitle">Template Parameters</h3>
+            <div id="presetDialogParams"></div>
+            <div class="modal-actions">
+                <button class="btn btn-sm" onclick="hidePresetDialog()">Cancel</button>
+                <button class="btn btn-sm btn-primary" onclick="applyPreset()">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Component Detail Modal -->
+    <div class="modal-overlay" id="componentModal" style="display:none" onclick="hideComponentModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <h3 id="compModalTitle">Component</h3>
+            <div id="compModalBody"></div>
+            <div class="modal-actions">
+                <button class="btn btn-sm" onclick="hideComponentModal()">Cancel</button>
+                <button class="btn btn-sm btn-primary" onclick="instantiateComponent()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/minimap.js?v=6"></script>
+    <script src="/static/plan-visual.js?v=6"></script>
+    <script src="/static/suggest-ui.js?v=6"></script>
+    <script src="/static/source-picker.js?v=6"></script>
+    <script src="/static/app.js?v=6"></script>
+    <script type="module" src="/static/scene-viewer.js?v=7"></script>
+</body>
+</html>

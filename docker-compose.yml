@@ -62,6 +62,25 @@ services:
     profiles:
       - full
 
+  # Vibe3D Unity Accelerator (optional)
+  vibe3d:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bio-vibe3d
+    command: ["python", "-m", "uvicorn", "vibe3d.backend.main:app", "--host", "0.0.0.0", "--port", "8091"]
+    environment:
+      MCP_SERVER_URL: http://host.docker.internal:8080/mcp
+      VIBE3D_HOST: 0.0.0.0
+      VIBE3D_PORT: 8091
+    ports:
+      - "8091:8091"
+    restart: unless-stopped
+    networks:
+      - bio_network
+    profiles:
+      - full
+
 volumes:
   bio_pgdata:
 

@@ -1,0 +1,870 @@
+================================================================================
+AI-Guided UX Innovation for Unity MCP Digital Twin
+— 소스 기반 분석 및 작업지시/소스선택 고도화 지시서 —
+================================================================================
+
+Version: 2.0
+Date: 2026-02-06
+Target: Vibe3D Unity Accelerator (v2.0) + BIO Digital Twin
+Base Code: vibe3d/backend/{main.py, plan_generator.py, plan_validator.py, executor.py, fermentation_bridge.py}
+           vibe3d/frontend/static/{app.js, style.css}
+
+================================================================================
+§1. 현재 시스템 분석 (Current System Analysis)
+================================================================================
+
+1.1 아키텍처 파이프라인
+─────────────────────
+사용자 입력(자연어) → plan_generator.py → plan_validator.py → executor.py → MCP → Unity
+
+현재 파이프라인 흐름:
+  [app.js: sendCommand()]
+      ↓ POST /api/command
+  [main.py: execute_command()]
+      ↓ Step 1: generate_plan(command, context)
+  [plan_generator.py]
+      ├─ generate_plan_template(command)  ← 15개 regex 패턴
+      └─ generate_plan_llm(command)       ← Claude API 폴백
+      ↓ Step 2: validate_plan(plan)
+  [plan_validator.py]
+      ├─ JSON Schema 검증 (Draft7)
+      ├─ 금지 패턴 차단 (FORBIDDEN_PATTERNS)
+      └─ 액션 수 제한 (max 100)
+      ↓ Step 3: executor.execute(job_id, command, plan, method)
+  [executor.py: PlanExecutor]
+      ├─ plan_to_mcp_commands(plan)  ← plan→MCP 변환
+      └─ mcp.batch_execute(batch)    ← 25개 단위 배치
+      ↓ WebSocket broadcast
+  [app.js: handleWS()] → UI 업데이트
+
+1.2 현재 입력 방식의 한계
+──────────────────────
+(a) 단일 텍스트 입력(commandInput): 자연어만 허용, 파일/이미지/드래그 없음
+(b) 프리셋 5개 카테고리(기본생성/조명/재질/씬관리/발효설비): 정적, 확장 불편
+(c) 자동실행 토글(autoExecute): On/Off 전환만 가능, 단계별 검수 불가
+(d) 히스토리: deque(maxlen=50), 단순 문자열 목록, 컨텍스트 연결 없음
+(e) 템플릿 15개 패턴(floor/cube/sphere/cylinder/capsule/light/delete/duplicate/
+    move/color/scale/wall/grid/screenshot/save): 복합 명령 불가
+
+1.3 현재 출력/피드백의 한계
+────────────────────────
+(a) Plan 프리뷰: JSON raw 텍스트(planPreview), 시각화 없음
+(b) Job 로그: 텍스트 기반(job-item), 3D 프리뷰/before-after 없음
+(c) 계층 뷰(hierarchyTree): MCP 호출 필수, 캐시 없음, 수동 Refresh
+(d) Inspector: 선택 오브젝트 Transform만 표시, 컴포넌트/머티리얼 미표시
+(e) 에러: 텍스트 메시지만("Cannot understand"), 수정 제안 없음
+
+1.4 씬 컨텍스트 활용도
+───────────────────
+현재 씬 상태를 plan 생성 시 활용하지 않음:
+  - generate_plan(command, context): context는 working_dir 문자열만 전달
+  - LLM에 hierarchy/object 정보를 보내지 않아 씬 인식이 불가능
+  - 예: "탱크 옆에 큐브" → 탱크 위치를 모름 → 실패
+
+================================================================================
+§2. AI-Guided 명령 인텔리전스 (Command Intelligence)
+================================================================================
+
+목표: 사용자의 모호한 명령을 "완성품질" 작업지시로 자동 보강
+
+2.1 의도 분석(Intent Disambiguation)
+────────────────────────────────
+현재: regex 매칭 → 단일 액션
+개선: 다단계 의도 파이프라인
+
+  Stage 1 — 키워드/패턴 추출 (현재 plan_generator.py 확장)
+    - 동사 분류: 생성(create)/수정(modify)/삭제(delete)/배치(arrange)/시뮬(simulate)
+    - 대상 분류: 프리미티브/설비/배관/센서/조명/카메라/그룹
+    - 속성 추출: 위치/크기/색상/재질/부모/이름/수량
+
+  Stage 2 — 모호성 탐지 + 사용자 확인
+    조건: 의도 해석이 2개 이상 가능할 때
+    UI 패턴: "이 명령은 다음과 같이 해석할 수 있습니다" + 선택지 버튼
+    예시:
+      입력: "탱크를 3개 배치해"
+      → [A] 같은 위치에 3개 (겹침)
+      → [B] 2m 간격으로 일렬 배치
+      → [C] 삼각형 배치
+
+  Stage 3 — 컨텍스트 보강 (§4 Scene Context 연동)
+    - 씬에 이미 있는 오브젝트 위치/크기를 참조하여 Plan 자동 보정
+    - 예: "탱크 오른쪽에" → 기존 탱크의 x+2m 위치 자동 계산
+
+구현 위치:
+  - plan_generator.py: generate_plan() 함수에 intent_pipeline() 추가
+  - app.js: sendCommand() 응답에 disambiguation UI 렌더링
+  - main.py: /api/command 응답에 "disambiguation" 필드 추가
+
+2.2 명령 자동완성(Auto-Complete)
+─────────────────────────
+현재: ArrowUp/Down으로 이전 명령만 탐색
+개선: 타이핑 중 실시간 제안
+
+  (a) 패턴 기반 제안: 입력 prefix → 매칭되는 프리셋 필터링
+  (b) 씬 기반 제안: 오브젝트 이름 자동완성 (hierarchy 캐시 활용)
+  (c) 히스토리 기반: 최근 50개 명령의 연관 패턴 분석
+  (d) 한/영 혼용: "탱크" 입력 → "Tank_A" 오브젝트도 제안
+
+구현:
+  - app.js: commandInput에 'input' 이벤트 리스너 + 드롭다운 UI
+  - main.py: GET /api/suggest?prefix=xxx 엔드포인트 추가
+  - 씬 캐시: /api/hierarchy 결과를 localStorage에 30초 캐시
+
+2.3 복합 명령 파서(Multi-Action Command)
+───────────────────────────────────
+현재: 하나의 regex 매칭 → 하나의 Plan
+개선: 세미콜론/줄바꿈으로 복합 명령 분리 → 다중 Plan 병합
+
+  입력: "탱크를 (0,0,0)에 만들고; 색상을 스테인리스로; 이름을 Tank_A로"
+  파서:
+    → Action 1: create_primitive Cylinder at (0,0,0)
+    → Action 2: apply_material Tank_A → stainless
+    → Action 3: rename → Tank_A
+  → 단일 Plan에 actions 3개로 병합
+
+구현:
+  - plan_generator.py: command를 ";"/"그리고"/"and"로 split → 각각 패턴 매칭
+  - plan_validator.py: 병합된 Plan의 action 간 의존성 검증
+    (예: rename은 create 이후여야 함)
+
+================================================================================
+§3. 스마트 소스 선택기 (Smart Source Picker)
+================================================================================
+
+목표: 3D 모델/사진/도면/데이터 소스를 AI가 분류하고 최적 활용 방법을 안내
+
+3.1 현재 파일 브라우저 분석
+─────────────────────
+(소스코드 참조: main.py 371-412, app.js 322-416)
+
+  - ASSET_EXTENSIONS 7개 카테고리: 3d_model/texture/material/prefab/scene/script/audio/data
+  - loadFiles(): 디렉토리 목록 + 아이콘 표시
+  - selectFile(): 에셋 파일 선택 시 "Import {name}" 명령 자동 생성
+  - 한계: 파일 내용 분석 없음, 품질 평가 없음, 추천 없음
+
+3.2 AI 소스 분류기(Intelligent Source Classifier)
+──────────────────────────────────────────
+파일 업로드/선택 시 AI가 자동 분류:
+
+  (a) 3D 모델 (FBX/OBJ/GLB)
+      → 분석: 폴리곤 수, 스케일, 축 방향, 텍스처 유무
+      → 품질 점수: 0-100 (폴리곤 적정성/노멀/UV)
+      → 추천: "이 모델은 LOD 0에 적합, 폴리곤 50K → 임포트 시 최적화 권장"
+
+  (b) 텍스처/사진 (PNG/JPG)
+      → 분석: 해상도, 색공간, 투명도
+      → 용도 추천: diffuse/normal/emission 분류
+      → 설비 사진: OCR로 명판/라벨 추출 → 설비 ID 매칭
+
+  (c) 도면 (DWG/DXF/PDF)
+      → 현재 코드에서 DWG는 binary → ezdxf 불가 (memory note 참조)
+      → 개선: rendered PNG 파일(docs/rendered/) 활용 + AI 비전 분석
+      → 추출: 설비 배치/파이프 라인/밸브 위치 → Plan 자동 생성
+
+  (d) 데이터 (CSV/JSON/XML)
+      → 시뮬레이션 파라미터 자동 파싱
+      → 센서 로그: 시계열 트렌드 분석 → 이상치 탐지 파라미터 추천
+
+3.3 소스 품질 게이트(Source Quality Gate)
+───────────────────────────────────
+각 소스 파일에 대해 품질 점수 + 경고를 자동 생성:
+
+  [Score 90-100] 즉시 사용 가능
+  [Score 60-89]  일부 보정 필요 (스케일/축/텍스처 등)
+  [Score 30-59]  주의 필요 (큰 보정/변환 필요)
+  [Score 0-29]   사용 불가 (재제작/다른 소스 필요)
+
+구현:
+  - main.py: POST /api/source/analyze 엔드포인트
+  - 분석 결과: { score, issues[], recommendations[], auto_fix_available }
+  - app.js: 파일 브라우저에 품질 배지(badge) 표시
+
+3.4 소스 → Plan 자동 변환
+────────────────────
+소스 파일에서 직접 Plan을 생성하는 워크플로:
+
+  도면(P&ID) → 설비 목록 추출 → 배치 Plan 생성
+  3D 모델(FBX) → 임포트 + 위치 배치 Plan
+  사진(설비) → OCR → 라벨/색상 추출 → 머티리얼 Plan
+  CSV(센서) → 파라미터 → 시뮬레이션 설정 Plan
+
+================================================================================
+§4. 컨텍스트 기반 씬 인텔리전스 (Contextual Scene Understanding)
+================================================================================
+
+목표: AI가 현재 Unity 씬 상태를 이해하고 명령을 씬 맥락에 맞게 해석
+
+4.1 씬 그래프 캐시(Scene Context Graph)
+──────────────────────────────────
+현재: /api/hierarchy는 매번 MCP 호출 (느림, 캐시 없음)
+개선:
+
+  (a) 서버 측 캐시
+      - SimulationManager처럼 싱글톤 SceneCache 객체
+      - hierarchy 캐시 (TTL: 5초, 변경 시 invalidate)
+      - 오브젝트별 Transform 캐시 (이름→위치/크기 매핑)
+
+  (b) 변경 이벤트 추적
+      - Plan 실행 후 자동 캐시 업데이트 (executor.py 연동)
+      - 생성: 캐시에 새 오브젝트 추가
+      - 삭제: 캐시에서 제거
+      - 이동: 위치 업데이트
+
+  (c) Plan 생성 시 활용
+      - generate_plan()에 scene_context 주입:
+        {
+          "objects": [{"name":"Tank_A", "pos":(2,0,0), "scale":(1,2,1)}, ...],
+          "bounds": {"min":(-10,0,-10), "max":(10,5,10)},
+          "object_count": 99
+        }
+      - LLM에 씬 컨텍스트 전달 → "탱크 옆에" 해석 가능
+
+구현:
+  - main.py: SceneContextCache 클래스 추가
+  - plan_generator.py: generate_plan(command, context) → context에 씬 정보 포함
+  - SYSTEM_PROMPT 업데이트: "현재 씬에 있는 오브젝트: {scene_context}"
+
+4.2 공간 추론(Spatial Reasoning)
+─────────────────────────
+자연어 공간 표현을 좌표로 변환:
+
+  "옆에" → 대상의 x + (대상width/2 + 자신width/2 + gap)
+  "위에" → 대상의 y + 대상height
+  "앞에" → 대상의 z - offset (Unity 좌표계 기준)
+  "뒤에" → 대상의 z + offset
+  "가운데" → 기존 오브젝트들의 centroid
+  "바닥 위" → y = 0 + height/2
+
+구현:
+  - plan_generator.py: _resolve_spatial_reference(ref_text, scene_context) → position
+
+4.3 충돌 감지(Collision Check)
+───────────────────────
+Plan 실행 전 오브젝트 간 겹침 검사:
+
+  - 각 오브젝트의 AABB(Axis-Aligned Bounding Box) 계산
+  - 새 오브젝트가 기존 오브젝트와 겹치면 경고
+  - 자동 보정: 겹침 방향으로 최소 이동량 제안
+
+구현:
+  - plan_validator.py: spatial_collision_check(plan, scene_context) 추가
+
+================================================================================
+§5. 예측형 액션 제안 (Predictive Action Suggestions)
+================================================================================
+
+목표: 사용자가 다음에 할 가능성이 높은 작업을 미리 제안
+
+5.1 패턴 학습 기반 제안
+───────────────────
+현재 command_history(deque maxlen=50)에서 시퀀스 패턴 분석:
+
+  빈출 시퀀스 예시:
+    바닥 생성 → 조명 배치 → 오브젝트 생성 → 색상 적용
+    설비 생성 → 이름 변경 → 위치 조정 → 복제
+
+  AI 제안 UI:
+    "방금 바닥을 만들었습니다. 다음 작업을 제안합니다:"
+    [1] 조명 4개를 천장에 배치  [2] 벽 생성  [3] 설비 배치
+
+구현:
+  - main.py: CommandResponse에 "suggestions" 필드 추가
+  - plan_generator.py: get_next_suggestions(history, scene_context) → list[str]
+  - app.js: 명령 실행 후 suggestion 칩(chip) 렌더링
+
+5.2 디지털 트윈 전용 워크플로 제안
+──────────────────────────────
+발효설비 디지털 트윈(fermentation_bridge.py) 연동:
+
+  시뮬레이션 상태에 따른 자동 제안:
+    pH < 5.5 (critical) → "발효조 색상을 빨간색으로 변경하시겠습니까?"
+    볼륨 > 90% → "액면 레벨 오브젝트를 95% 스케일로 조정?"
+    온도 > 45°C → "냉각수 배관 색상을 파란색으로 하이라이트?"
+
+구현:
+  - fermentation_bridge.py: build_suggestion_plan(state) → 제안 Plan 목록
+  - main.py: /api/fermentation/suggest 엔드포인트
+
+5.3 작업 흐름 템플릿(Workflow Template)
+──────────────────────────────────
+반복적인 작업을 "워크플로"로 저장하고 재사용:
+
+  워크플로 정의:
+    {
+      "name": "설비 배치 표준",
+      "steps": [
+        {"prompt": "설비 이름을 입력하세요", "type": "text"},
+        {"prompt": "배치 위치 (x,y,z)", "type": "position"},
+        {"prompt": "재질 선택", "type": "material", "options": ["stainless","steel","copper"]},
+      ],
+      "plan_template": { ... }  // 파라미터화된 Plan
+    }
+
+구현:
+  - main.py: CRUD /api/workflows
+  - app.js: 워크플로 빌더 UI + 실행 위자드
+
+================================================================================
+§6. 비주얼 피드백 & 라이브 프리뷰 (Visual Feedback & Live Preview)
+================================================================================
+
+목표: Plan 실행 전 시각적 프리뷰, 실행 중 실시간 피드백
+
+6.1 Plan 시각적 프리뷰(Visual Plan Preview)
+──────────────────────────────────────
+현재: planPreview에 JSON raw 텍스트 표시 (plan_generator 결과)
+개선:
+
+  (a) 2D 미니맵 프리뷰
+      - Plan의 actions를 파싱하여 2D top-down 뷰로 렌더링
+      - Canvas/SVG로 오브젝트 위치/크기를 사각형으로 표시
+      - 기존 오브젝트(씬 캐시)는 회색, 새 오브젝트는 강조색
+
+  (b) 액션 타임라인
+      - Plan actions를 순서대로 카드로 표시
+      - 각 카드: 아이콘 + 오브젝트명 + 속성 요약
+      - 드래그로 순서 변경 가능
+
+  (c) 3D 프리뷰(Unity 스크린샷 기반)
+      - Plan 실행 전: MCP screenshot → before 이미지 저장
+      - Plan 실행 후: MCP screenshot → after 이미지
+      - UI: 슬라이더로 before/after 비교
+
+구현:
+  - app.js: showPlan() 함수 확장
+    현재: planPreview.textContent = JSON.stringify(plan)
+    개선: renderPlanVisual(plan) → 미니맵 + 타임라인 + JSON 탭
+
+  - main.py: /api/preview 엔드포인트
+    → Plan을 받아서 2D 좌표 계산 + before 스크린샷 반환
+
+6.2 실시간 실행 피드백
+──────────────────
+현재: WebSocket broadcast(job_start/plan_generated/job_completed/job_failed)
+개선:
+
+  (a) 액션 단위 진행률
+      - executor.py: 배치 실행 중 각 액션 완료 시 broadcast
+      - UI: 프로그레스 바 + 각 액션의 성공/실패 표시
+
+  (b) 실시간 로그 스트림
+      - Unity Console 로그를 WebSocket으로 스트리밍
+      - 에러 로그 자동 하이라이트 + 원인 분석
+
+  (c) 실행 결과 3D 프리뷰
+      - Job 완료 시 자동 스크린샷 → job 로그에 썸네일 첨부
+      - "before → after" 비교 뷰
+
+구현:
+  - executor.py: execute() 메서드에 progress callback 추가
+  - main.py: WebSocket broadcast에 "action_progress" 이벤트 추가
+    { event: "action_progress", data: { job_id, action_idx, total, status, detail } }
+  - app.js: handleWS()에 action_progress 핸들러 추가
+
+================================================================================
+§7. 지능형 에러 복구 (Intelligent Error Recovery)
+================================================================================
+
+목표: 에러 발생 시 원인 분석 + 자동 수정 제안 + 원클릭 복구
+
+7.1 현재 에러 처리 분석
+───────────────────
+(소스코드 참조: executor.py 78-98, main.py 228-237)
+
+현재 에러 유형:
+  (a) Plan 생성 실패: "Cannot understand" → 템플릿 예시만 안내
+  (b) Validation 실패: 스키마 에러 목록 → 텍스트로 3개까지 표시
+  (c) MCP 실행 실패: "MCP connection lost" / 배치 실패 → 에러 문자열만
+  (d) 부분 성공: PARTIAL 상태 → 실패 액션 식별 불명확
+
+7.2 에러 분류 + 원인 분석 엔진
+───────────────────────────
+
+  에러 카테고리:
+    E1. 명령 해석 불가 → 유사 명령 제안
+    E2. 오브젝트 못 찾음 → 이름 유사도 검색 (씬 캐시)
+    E3. MCP 연결 끊김 → 자동 재연결 시도
+    E4. 위치 충돌 → 자동 이동 제안
+    E5. 스키마 오류 → 필드 자동 보정
+    E6. 배치 제한 초과 → 자동 분할
+
+구현:
+  - executor.py: ErrorAnalyzer 클래스 추가
+    def analyze(error, plan, scene_context) → {
+      category: "E2",
+      root_cause: "오브젝트 'Tank_B'가 씬에 없음",
+      suggestions: [
+        {"label": "Tank_A 로 변경", "fix_plan": {...}},
+        {"label": "Tank_B 생성 후 재실행", "fix_plan": {...}},
+      ],
+      auto_fixable: true
+    }
+
+  - main.py: CommandResponse에 "error_analysis" 필드 추가
+  - app.js: 에러 발생 시 수정 제안 버튼 렌더링
+    → 클릭 시 fix_plan을 /api/execute로 전송
+
+7.3 롤백(Undo) 메커니즘
+───────────────────
+현재: 실행 취소 기능 없음
+개선:
+
+  (a) Plan 실행 전 스냅샷 저장
+      - 영향받는 오브젝트 목록 + Transform 저장
+      - 생성된 오브젝트: delete로 롤백
+      - 수정된 오브젝트: 이전 Transform으로 복원
+      - 삭제된 오브젝트: 경고 (완전 복원 불가)
+
+  (b) Undo Plan 자동 생성
+      - executor.py: 실행 결과에서 역방향 Plan 생성
+      - UI: "실행 취소" 버튼 → undo_plan 실행
+
+구현:
+  - executor.py: execute() 반환값에 undo_plan 포함
+  - main.py: POST /api/undo/{job_id} 엔드포인트
+  - app.js: job 로그에 "Undo" 버튼 추가
+
+================================================================================
+§8. 디지털 트윈 전용 워크플로 (Digital Twin Workflows)
+================================================================================
+
+목표: BIO 발효설비 디지털 트윈 구축의 전체 워크플로를 AI가 안내
+
+8.1 현재 디지털 트윈 연동
+─────────────────────
+(소스코드 참조: fermentation_bridge.py)
+
+  FermentationBridge 클래스:
+    - VESSEL_OBJECT_MAP: 7개 설비 ID → Unity 오브젝트 매핑
+    - PH_COLORS/DO_COLORS/TEMP_COLORS: 시뮬레이션 상태 → 색상
+    - update_vessel_visuals(state): MCP batch로 색상/스케일 업데이트
+    - start_sync_loop(get_state_fn, interval=1.0): 1Hz 동기화
+    - build_status_plan(state): 상태 → Vibe3D Plan 생성
+
+  현재 한계:
+    - 색상 변경만 지원 (pH→color)
+    - 볼륨→Y스케일만 지원 (fill level)
+    - 애니메이션/파티클/사운드 미지원
+    - 알람/이벤트 시각화 미지원
+
+8.2 확장 디지털 트윈 시각화
+─────────────────────────
+
+  (a) 유체 흐름 시각화
+      - 배관 내 유체 방향: 화살표 오브젝트 이동 애니메이션
+      - 유량: 화살표 속도/크기로 표현
+      - 색상: 유체 종류별 (배지=갈색, 알칼리=파란, 산=빨간)
+
+  (b) 센서 실시간 표시
+      - 센서 위치에 3D 텍스트(TextMeshPro) 배치
+      - 값 변화: 색상 코드 + 숫자 업데이트
+      - 알람 상태: 깜빡임(blink) + 아이콘
+
+  (c) 이벤트 시각화
+      - pH 이상 → 발효조 테두리 빨간 글로우
+      - 알칼리 투입 → 투입 라인 하이라이트 + 파티클
+      - 정상 복귀 → 녹색 전환 + 체크 아이콘
+
+  (d) 시간 제어
+      - 시뮬레이션 시간 슬라이더 (빨리감기/되감기)
+      - 키프레임 기반 상태 리플레이
+      - 특정 시점으로 점프
+
+구현:
+  - fermentation_bridge.py: 확장 메서드 추가
+    update_flow_visuals(state)       → 유체 흐름
+    update_sensor_displays(state)    → 센서 텍스트
+    update_event_effects(events)     → 이벤트 효과
+    build_timeline_plan(history)     → 시간 리플레이
+
+  - main.py: 디지털 트윈 전용 엔드포인트
+    POST /api/twin/sync          → 수동 동기화 트리거
+    GET  /api/twin/status         → 현재 브릿지 상태
+    POST /api/twin/timeline       → 시간 리플레이
+    WS   /ws/twin                 → 실시간 센서 스트리밍
+
+8.3 AI 안내 구축 워크플로
+────────────────────
+디지털 트윈 처음 구축 시 단계별 안내:
+
+  Step 1: 설비 목록 확인
+    → VESSEL_OBJECT_MAP 기반 7개 설비 존재 확인
+    → 누락 설비 자동 생성 제안
+
+  Step 2: 센서 배치
+    → P&ID 기반 센서 위치 자동 추출
+    → Unity 오브젝트 생성 Plan
+
+  Step 3: 배관 연결
+    → 연결 그래프 기반 배관 경로 생성
+    → 3D 실린더 + 엘보우 자동 배치
+
+  Step 4: 시뮬레이션 연동
+    → FermentationBridge.start() 호출
+    → 실시간 동기화 확인
+
+  Step 5: 검증
+    → 시나리오 실행 (pH 이상 → 알칼리 투입)
+    → 시각화 정상 동작 확인
+    → 스크린샷 + 리포트 생성
+
+================================================================================
+§9. 멀티모달 입력 (Multi-Modal Input)
+================================================================================
+
+목표: 텍스트 외에 이미지/음성/드래그&드롭으로 작업지시 가능
+
+9.1 이미지 기반 입력
+─────────────
+현재: 텍스트 입력만 지원
+
+  (a) 스크린샷 기반 지시
+      - Unity 스크린샷에 사용자가 영역 표시
+      - "이 영역에 탱크를 배치해줘" → 영역 좌표 → Plan
+
+  (b) 사진 기반 모델링
+      - 설비 사진 업로드 → AI 분석 → 프리미티브 조합 Plan
+      - 예: 원통형 탱크 사진 → Cylinder + 다리(4개 Cube) + 노즐
+
+  (c) 도면 기반 자동 배치
+      - P&ID 렌더링(docs/rendered/*.png) 업로드
+      - AI 비전: 설비 심볼/배관/밸브 인식
+      - 인식 결과 → 자동 배치 Plan
+
+구현:
+  - main.py: POST /api/command/image (multipart form: image + prompt)
+  - plan_generator.py: generate_plan_vision(image_bytes, prompt) → Plan
+  - app.js: 이미지 드래그&드롭 영역 추가
+
+9.2 드래그&드롭 오브젝트 배치
+────────────────────────
+현재: 텍스트로만 위치 지정 (좌표 직접 입력)
+
+  (a) 2D 미니맵에서 드래그
+      - 미니맵에서 클릭 → 해당 위치에 오브젝트 배치
+      - 기존 오브젝트 드래그 → 위치 변경
+
+  (b) 프리셋 팔레트에서 드래그
+      - 프리셋(큐브/구/실린더 등)을 미니맵/좌표로 드래그
+      - 드롭 위치 → Plan 자동 생성
+
+구현:
+  - app.js: HTML5 drag/drop API + Canvas 미니맵
+  - 좌표 변환: 2D 픽셀 → 3D 월드 좌표 (카메라 뷰 기반)
+
+9.3 음성 입력(Voice)
+──────────────
+  - Web Speech API (브라우저 내장) 활용
+  - 음성 → 텍스트 → 기존 명령 파이프라인
+  - 한국어/영어 자동 감지
+
+구현:
+  - app.js: 마이크 버튼 + SpeechRecognition API
+  - 인식 결과를 commandInput에 채우고 자동 실행 옵션
+
+================================================================================
+§10. 구현 아키텍처 (Implementation Architecture)
+================================================================================
+
+10.1 모듈 구조 확장
+
+  vibe3d/
+  ├── backend/
+  │   ├── main.py               ← 기존 22개 엔드포인트 + 신규 10개
+  │   ├── plan_generator.py     ← +intent_pipeline, +multi_action, +vision
+  │   ├── plan_validator.py     ← +spatial_check, +collision_check
+  │   ├── executor.py           ← +progress_callback, +undo_plan, +error_analyzer
+  │   ├── fermentation_bridge.py← +flow_visuals, +sensor_display, +events
+  │   ├── scene_cache.py        ← [신규] 씬 컨텍스트 캐시
+  │   ├── source_analyzer.py    ← [신규] 소스 파일 분석/품질 평가
+  │   ├── suggestion_engine.py  ← [신규] 예측형 제안 엔진
+  │   ├── error_analyzer.py     ← [신규] 에러 분류/수정 제안
+  │   └── workflow_manager.py   ← [신규] 워크플로 CRUD
+  ├── frontend/
+  │   ├── static/
+  │   │   ├── app.js            ← 기존 943줄 + UX 혁신 컴포넌트
+  │   │   ├── minimap.js        ← [신규] 2D 미니맵 캔버스
+  │   │   ├── plan-visual.js    ← [신규] Plan 시각적 프리뷰
+  │   │   ├── suggest-ui.js     ← [신규] 자동완성/제안 UI
+  │   │   ├── source-picker.js  ← [신규] 소스 분류/품질 UI
+  │   │   └── style.css         ← 기존 862줄 + 신규 컴포넌트 스타일
+  │   └── index.html            ← 기존 레이아웃 + 신규 패널
+  └── docs/
+      └── schemas/
+          └── unity_plan.schema.json  ← 확장 (신규 액션 타입)
+
+10.2 데이터 흐름 확장
+
+  [입력 계층]
+    텍스트/이미지/음성/드래그 → InputNormalizer → 통합 CommandRequest
+
+  [인텔리전스 계층]
+    CommandRequest → IntentPipeline
+      ├─ PatternMatcher (기존 15 regex + 확장)
+      ├─ SceneContextResolver (씬 캐시 참조)
+      ├─ SpatialReasoner (공간 추론)
+      ├─ DisambiguationEngine (모호성 해소)
+      └─ LLM (Claude API 폴백)
+      → EnrichedPlan
+
+  [검증 계층]
+    EnrichedPlan → PlanValidator
+      ├─ SchemaValidation (JSON Schema)
+      ├─ SafetyCheck (금지 패턴)
+      ├─ SpatialCollisionCheck (충돌 감지)
+      └─ PerformanceCheck (폴리곤 예산)
+      → ValidatedPlan
+
+  [실행 계층]
+    ValidatedPlan → PlanExecutor
+      ├─ SnapshotCapture (undo용)
+      ├─ BatchExecution (25개 단위 MCP)
+      ├─ ProgressBroadcast (WebSocket)
+      └─ ErrorAnalysis (실패 시)
+      → JobResult + UndoPlan
+
+  [피드백 계층]
+    JobResult → FeedbackEngine
+      ├─ VisualPreview (before/after)
+      ├─ SuggestionEngine (다음 액션)
+      ├─ SceneCacheUpdate (캐시 갱신)
+      └─ HistoryTracker (학습용)
+      → UI Update
+
+================================================================================
+§11. API 확장 명세 (API Extension Specifications)
+================================================================================
+
+11.1 신규 엔드포인트
+
+  ┌─────────────────────────────────┬────────┬──────────────────────────────────┐
+  │ Endpoint                         │ Method │ Description                       │
+  ├─────────────────────────────────┼────────┼──────────────────────────────────┤
+  │ /api/suggest                     │ GET    │ 자동완성 제안 (prefix 파라미터)   │
+  │ /api/command/image               │ POST   │ 이미지+텍스트 복합 명령           │
+  │ /api/source/analyze              │ POST   │ 소스 파일 품질 분석               │
+  │ /api/source/to-plan              │ POST   │ 소스 → Plan 자동 변환             │
+  │ /api/preview                     │ POST   │ Plan 시각적 프리뷰 생성           │
+  │ /api/undo/{job_id}               │ POST   │ 작업 롤백                         │
+  │ /api/scene/context               │ GET    │ 씬 컨텍스트 (캐시)               │
+  │ /api/workflows                   │ CRUD   │ 워크플로 관리                     │
+  │ /api/twin/sync                   │ POST   │ 디지털 트윈 수동 동기화           │
+  │ /api/twin/status                 │ GET    │ 브릿지 상태 조회                  │
+  │ /ws/twin                         │ WS     │ 실시간 센서 스트리밍              │
+  └─────────────────────────────────┴────────┴──────────────────────────────────┘
+
+11.2 CommandResponse 확장
+
+  현재:
+    { job_id, status, message, plan?, result? }
+
+  확장:
+    {
+      job_id: str,
+      status: str,
+      message: str,
+      plan: dict | null,
+      result: dict | null,
+      // ── 신규 필드 ──
+      disambiguation: {
+        options: [{label, plan}, ...],
+        confidence: float  // 0-1
+      } | null,
+      suggestions: [
+        {label: str, command: str, confidence: float}
+      ],
+      error_analysis: {
+        category: str,
+        root_cause: str,
+        suggestions: [{label, fix_plan}],
+        auto_fixable: bool
+      } | null,
+      undo_available: bool,
+      scene_snapshot: str | null,  // before 스크린샷 경로
+    }
+
+11.3 WebSocket 이벤트 확장
+
+  현재 이벤트:
+    mcp_status, job_start, plan_generated, job_completed, job_failed,
+    workdir_changed, pong
+
+  신규 이벤트:
+    action_progress   → { job_id, action_idx, total, action_type, status }
+    scene_updated     → { objects_added[], objects_removed[], objects_modified[] }
+    twin_state        → { vessels: {id: {ph, temp, do, volume}}, timestamp }
+    suggestion        → { trigger, suggestions[] }
+    error_recovery    → { job_id, analysis, fix_options[] }
+
+================================================================================
+§12. 프론트엔드 컴포넌트 명세 (Frontend Component Specifications)
+================================================================================
+
+12.1 명령 인텔리전스 UI
+
+  (a) 자동완성 드롭다운 (suggest-ui.js)
+      - commandInput 아래에 표시
+      - 최대 5개 제안, 키보드 화살표로 탐색
+      - 카테고리별 그룹핑 (패턴/오브젝트/히스토리)
+      - CSS: .suggest-dropdown { position:absolute; z-index:1000; }
+
+  (b) 모호성 해소 모달
+      - 명령 해석 옵션 카드 (최대 3개)
+      - 각 카드: 2D 미니 프리뷰 + 설명
+      - 클릭 시 해당 Plan으로 실행
+      - CSS: .disambig-modal { display:flex; gap:12px; }
+
+  (c) 제안 칩 바(Suggestion Chips)
+      - 명령 입력 아래에 수평 스크롤
+      - 클릭 시 commandInput에 채움
+      - 신뢰도에 따라 강조 (>0.8: accent, >0.5: normal, <0.5: dim)
+
+12.2 Plan 시각적 프리뷰 (plan-visual.js)
+
+  (a) 3탭 구조: 미니맵 | 타임라인 | JSON
+      현재 planSection은 JSON만 표시
+      개선: 탭 전환으로 3가지 뷰 제공
+
+  (b) 미니맵 탭
+      - Canvas 2D 렌더링 (top-down view)
+      - 기존 오브젝트: 회색 사각형/원
+      - 새 오브젝트: 강조색(accent) 사각형/원
+      - 호버 시 오브젝트 정보 툴팁
+      - 클릭으로 위치 수정 가능
+
+  (c) 타임라인 탭
+      - 수직 카드 목록 (액션 순서)
+      - 각 카드: 아이콘 + 타입 + 대상 + 속성 요약
+      - 드래그로 순서 변경
+      - 개별 액션 편집/삭제 버튼
+
+  (d) JSON 탭 (기존)
+      - 구문 하이라이팅 (Prism.js 또는 직접 구현)
+      - 인라인 편집 가능
+      - 편집 후 재검증 버튼
+
+12.3 소스 브라우저 확장 (source-picker.js)
+
+  (a) 파일 목록 확장
+      - 기존 아이콘 + 이름 + 크기
+      - 추가: 품질 배지 (점수 색상 코드)
+      - 추가: AI 분류 태그 (3d_model/texture/data/drawing)
+      - 추가: "분석" 버튼 → /api/source/analyze 호출
+
+  (b) 소스 상세 패널
+      - 3D 모델: 폴리곤 수, 바운딩 박스, 썸네일
+      - 이미지: 해상도, 색공간, OCR 결과
+      - 데이터: 컬럼 목록, 행 수, 샘플 미리보기
+
+  (c) "Plan 생성" 버튼
+      - 소스 선택 후 원클릭으로 Plan 생성
+      - /api/source/to-plan 호출 → Plan 프리뷰 표시
+
+12.4 디지털 트윈 대시보드
+
+  (a) 설비 상태 카드
+      - VESSEL_OBJECT_MAP의 7개 설비 각각 카드
+      - pH/DO/온도/볼륨 실시간 표시
+      - 상태 색상 코드 (PH_COLORS/DO_COLORS/TEMP_COLORS)
+
+  (b) 트렌드 차트
+      - pH, DO, 온도 시계열 (최근 1시간)
+      - 알람 임계값 라인 표시
+      - Canvas 기반 경량 차트 (Chart.js 또는 직접 구현)
+
+  (c) 이벤트 로그
+      - 이상 탐지/알칼리 투입/정상 복귀 이벤트
+      - 시간순 목록 + 설비 필터
+
+================================================================================
+§13. 배포 및 성능 목표 (Deployment & Performance Targets)
+================================================================================
+
+13.1 성능 목표
+
+  ┌──────────────────────────────┬──────────────┐
+  │ Metric                        │ Target        │
+  ├──────────────────────────────┼──────────────┤
+  │ 명령 → Plan 생성 (템플릿)    │ < 50ms       │
+  │ 명령 → Plan 생성 (LLM)       │ < 3s         │
+  │ Plan 검증                     │ < 20ms       │
+  │ MCP 배치 실행 (25개)          │ < 5s         │
+  │ 자동완성 응답                 │ < 100ms      │
+  │ 씬 컨텍스트 캐시 응답        │ < 10ms       │
+  │ WebSocket 메시지 지연         │ < 50ms       │
+  │ 소스 파일 분석                │ < 10s        │
+  │ 디지털 트윈 동기화 주기       │ 1Hz (1초)    │
+  │ 프론트엔드 초기 로딩          │ < 2s         │
+  │ 미니맵 렌더링 (100 오브젝트)  │ < 16ms (60fps)│
+  └──────────────────────────────┴──────────────┘
+
+13.2 구현 우선순위 (Phase 단계)
+
+  [Phase 1 — 즉시 구현 가능] (기존 코드 확장만으로 가능)
+  ──────────────────────────
+  P1-1. 씬 컨텍스트 캐시 (scene_cache.py)
+        → plan_generator에 씬 정보 주입
+  P1-2. 복합 명령 파서 (plan_generator.py 확장)
+        → ";"/"그리고" 분리
+  P1-3. 자동완성 (GET /api/suggest + app.js)
+        → 히스토리 + 프리셋 기반
+  P1-4. Plan 타임라인 뷰 (plan-visual.js)
+        → 현재 JSON 대신 카드 목록
+  P1-5. 액션 단위 진행률 (executor.py + WebSocket)
+        → action_progress 이벤트
+
+  [Phase 2 — 중기 구현] (신규 모듈 필요)
+  ────────────────────
+  P2-1. 에러 분류 + 수정 제안 (error_analyzer.py)
+  P2-2. 예측형 제안 엔진 (suggestion_engine.py)
+  P2-3. 2D 미니맵 프리뷰 (minimap.js)
+  P2-4. before/after 스크린샷 비교
+  P2-5. 롤백(Undo) 메커니즘
+  P2-6. 소스 파일 품질 분석 (source_analyzer.py)
+  P2-7. 디지털 트윈 대시보드 UI
+
+  [Phase 3 — 장기 구현] (AI/ML + 외부 서비스 필요)
+  ────────────────────
+  P3-1. 이미지 기반 명령 (AI Vision API)
+  P3-2. 도면(P&ID) 자동 인식 → Plan 생성
+  P3-3. 음성 입력 (Web Speech API)
+  P3-4. 워크플로 빌더 + 저장/공유
+  P3-5. 공간 추론 엔진 (§4.2)
+  P3-6. 충돌 감지 (§4.3)
+  P3-7. 유체 흐름 애니메이션
+
+13.3 핵심 품질 지표 (KPI)
+
+  [사용성]
+  - 명령 성공률: > 85% (현재 추정 ~60%, 템플릿 한정)
+  - 재작업률: < 15% (Plan 수정 후 재실행 비율)
+  - 평균 작업 완료 시간: 현재 대비 50% 단축
+
+  [기술]
+  - MCP 배치 성공률: > 95%
+  - 씬 캐시 적중률: > 90%
+  - 에러 자동 복구율: > 50%
+
+  [디지털 트윈]
+  - 동기화 지연: < 2초 (시뮬레이션 → Unity 반영)
+  - 센서 데이터 정확도: ±5% (물리 엔진 대비)
+  - 시나리오 재현율: 100% (pH 이상 → 탐지 → 복구)
+
+================================================================================
+요약: Top 10 즉시 적용 가능한 개선사항
+================================================================================
+
+ 1. 씬 컨텍스트 캐시 → "탱크 옆에" 같은 상대 배치 가능
+ 2. 복합 명령 파서 → "만들고 색상 적용하고 이름 변경" 한 문장으로
+ 3. 자동완성 → 타이핑 중 명령/오브젝트 제안
+ 4. Plan 시각적 프리뷰 → JSON 대신 카드 목록 + 미니맵
+ 5. 액션별 진행률 → 실행 중 어디까지 완료됐는지 실시간 표시
+ 6. 에러 자동 분석 → "오브젝트 못 찾음" → "Tank_A로 변경?" 제안
+ 7. before/after 비교 → 실행 전후 스크린샷 슬라이더
+ 8. 실행 취소(Undo) → 마지막 Plan의 역방향 Plan 자동 생성
+ 9. 소스 파일 품질 배지 → 파일 브라우저에 점수 표시
+10. 다음 작업 제안 → "바닥 만듦 → 조명/벽/설비 중 어떤 것?" 자동 안내
+
+================================================================================
+(끝)
+================================================================================
