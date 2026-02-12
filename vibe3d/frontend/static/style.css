@@ -90,6 +90,7 @@ body {
     font-size: 15px;
 }
 .toolbar-btn:hover { color: var(--text-1); background: var(--bg-hover); border-color: var(--border); }
+.toolbar-btn.active { color: var(--accent); background: rgba(124,108,240,0.15); border-color: var(--accent); }
 
 .toolbar-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 
@@ -858,6 +859,47 @@ body {
 }
 .chat-input-area textarea::placeholder { color: var(--text-3); }
 .chat-input-area textarea:focus { border-color: var(--accent); }
+
+.chat-input-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 0 4px 0 6px;
+    transition: border-color var(--t);
+    min-width: 0;
+}
+.chat-input-wrap:focus-within { border-color: var(--accent); }
+.chat-input-wrap textarea {
+    border: none !important;
+    background: transparent !important;
+    padding: 8px 8px 8px 4px;
+    border-radius: 0;
+}
+
+.target-tag {
+    display: inline-flex;
+    align-items: center;
+    background: rgba(124,108,240,0.18);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+    flex-shrink: 0;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background var(--t);
+}
+.target-tag::before { content: "@"; opacity: 0.6; margin-right: 2px; }
+.target-tag::after { content: " ✕"; font-size: 10px; margin-left: 4px; opacity: 0.5; }
+.target-tag:hover { background: rgba(124,108,240,0.3); }
+.target-tag:hover::after { opacity: 1; }
 
 .chat-send {
     width: 34px;

@@ -35,10 +35,20 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', (e) => {
         if (e.ctrlKey && e.key === 'z') {
             const isTextInput = ['INPUT', 'TEXTAREA'].includes(e.target.tagName);
-            // Let browser handle Ctrl+Z if the text field has content
+            // Let browser handle text undo if input has content
             if (isTextInput && e.target.value.length > 0) return;
             e.preventDefault();
+            e.stopPropagation();
+            // Blur text input to prevent browser text-undo interference
+            if (isTextInput) e.target.blur();
             undoLast();
+        }
+        // W key — toggle move mode (when not typing)
+        if (e.key === 'w' || e.key === 'W') {
+            const isTextInput = ['INPUT', 'TEXTAREA'].includes(e.target.tagName);
+            if (isTextInput) return;
+            e.preventDefault();
+            toggleMoveMode();
         }
     });
 
@@ -121,6 +131,31 @@ function insertExample(el) {
 }
 
 // setChatMode removed — unified AI mode handles both commands and questions
+
+// ── Target Tag (object selection → command input) ────────────
+
+let _targetObjectName = null;
+
+function setTargetTag(name) {
+    _targetObjectName = name;
+    const tag = document.getElementById('targetTag');
+    if (tag) {
+        tag.textContent = name;
+        tag.style.display = 'inline-flex';
+        tag.title = `대상: ${name} (클릭하여 해제)`;
+    }
+    const input = document.getElementById('chatInput');
+    input.placeholder = `"${name}"에 대한 명령을 입력하세요...`;
+    input.focus();
+}
+
+function clearTargetTag() {
+    _targetObjectName = null;
+    const tag = document.getElementById('targetTag');
+    if (tag) tag.style.display = 'none';
+    const input = document.getElementById('chatInput');
+    input.placeholder = '자연어 명령을 입력하세요... (Enter로 전송)';
+}
 
 // ── Status ──────────────────────────────────────────────────
 
@@ -218,16 +253,22 @@ function setFooterStatus(text) {
 
 async function sendChat() {
     const input = document.getElementById('chatInput');
-    const message = input.value.trim();
-    if (!message) return;
+    const rawMessage = input.value.trim();
+    if (!rawMessage) return;
+
+    // Prepend target object name if a tag is active
+    const message = _targetObjectName
+        ? `"${_targetObjectName}" ${rawMessage}`
+        : rawMessage;
 
     const btn = document.getElementById('chatSendBtn');
     btn.disabled = true;
 
-    // Show user message in chat
+    // Show user message in chat (display with tag prefix)
     addChatMsg('user', message);
     input.value = '';
     input.style.height = 'auto';
+    clearTargetTag();
 
     // Track history
     commandHistoryList.unshift(message);
@@ -548,6 +589,30 @@ function init3DViewer() {
             document.querySelectorAll('.node-name').forEach(el => {
                 if (el.textContent === name) el.closest('.node-row')?.classList.add('selected');
             });
+            // Set target tag in command input
+            setTargetTag(name);
+        };
+        // Drag-to-move callback — sync position to Unity via MCP
+        window.sceneViewer.onMove = async (name, unityPos) => {
+            try {
+                const resp = await fetch(`${API}/api/object/action`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'modify',
+                        target: name,
+                        position: [unityPos.x, unityPos.y, unityPos.z],
+                    }),
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    addChatMsg('system', `"${name}" 이동 완료 → (${unityPos.x}, ${unityPos.y}, ${unityPos.z})`);
+                } else {
+                    addChatMsg('system', `이동 실패: ${data.detail || resp.statusText}`);
+                }
+            } catch (e) {
+                addChatMsg('system', `이동 동기화 실패: ${e.message}`);
+            }
         };
         scene3dInitialized = true;
         // Load scene data
@@ -1235,6 +1300,7 @@ function renderTreeNode(container, node, depth) {
         row.classList.add('selected');
         selectedObject = name;
         inspectObject(name);
+        setTargetTag(name);
     };
 
     div.appendChild(row);
@@ -1447,9 +1513,12 @@ async function saveScene() {
     }
 }
 
+let _undoInProgress = false;
+
 async function undoLast() {
+    if (_undoInProgress) return; // prevent duplicate calls
     if (_lastCompletedJobId) {
-        undoJob(_lastCompletedJobId);
+        await undoJob(_lastCompletedJobId);
     } else {
         // Fallback: find the most recent undo button in job list
         const lastBtn = document.querySelector('.job-item .undo-btn');
@@ -1459,6 +1528,12 @@ async function undoLast() {
 }
 
 async function undoJob(jobId) {
+    if (_undoInProgress) return;
+    _undoInProgress = true;
+
+    // Immediately clear to prevent duplicate calls
+    if (_lastCompletedJobId === jobId) _lastCompletedJobId = null;
+
     addChatMsg('system', `작업 ${jobId} 되돌리는 중...`);
     try {
         const resp = await fetch(`${API}/api/undo/${jobId}`, { method: 'POST' });
@@ -1471,9 +1546,6 @@ async function undoJob(jobId) {
         const count = data.result?.success_count || 0;
         addChatMsg('system', `되돌리기 완료: ${count}개 작업이 복원되었습니다.`);
 
-        // Clear this job from last completed (can't undo twice)
-        if (_lastCompletedJobId === jobId) _lastCompletedJobId = null;
-
         // Remove undo button from approval card if exists
         const card = document.getElementById(`approval-${jobId}`);
         if (card) {
@@ -1481,10 +1553,19 @@ async function undoJob(jobId) {
             if (undoBtn) undoBtn.remove();
         }
 
-        refreshHierarchy();
+        // Remove undo button from job list as well
+        const jobEl = document.getElementById(`job-${jobId}`);
+        if (jobEl) {
+            const undoBtn = jobEl.querySelector('.undo-btn');
+            if (undoBtn) undoBtn.remove();
+        }
+
+        await refreshHierarchy();
         refreshSceneView();
     } catch (e) {
         addChatMsg('system', `되돌리기 실패: ${e.message}`);
+    } finally {
+        _undoInProgress = false;
     }
 }
 
@@ -1492,6 +1573,22 @@ async function togglePlay() {
     // Send play/stop command via natural language
     document.getElementById('chatInput').value = 'Play mode toggle';
     sendChat();
+}
+
+function toggleMoveMode() {
+    if (!window.sceneViewer || !window.sceneViewer.initialized) {
+        addChatMsg('system', '3D 뷰가 초기화되지 않았습니다.');
+        return;
+    }
+    const enabled = window.sceneViewer.toggleMoveMode();
+    const btn = document.getElementById('moveModeBtn');
+    if (btn) {
+        btn.classList.toggle('active', enabled);
+        btn.title = enabled ? 'Move Mode ON (W)' : 'Move Mode OFF (W)';
+    }
+    addChatMsg('system', enabled
+        ? '이동 모드 ON — 오브젝트를 클릭하고 기즈모를 드래그하여 이동하세요.'
+        : '이동 모드 OFF — 뷰 모드로 전환되었습니다.');
 }
 
 async function deleteSelected() {

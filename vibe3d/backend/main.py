@@ -39,6 +39,9 @@ from ..mcp_client import UnityMCPClient
 
 # ── Logging ──────────────────────────────────────────────────
 
+# Ensure log directory exists (important for frozen/exe builds)
+os.makedirs(config.LOGS_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -235,10 +238,10 @@ class WorkingDirRequest(BaseModel):
 class ObjectActionRequest(BaseModel):
     target: str
     search_method: str = "by_name"
-    action: str  # inspect, delete, duplicate, select
-    position: dict | None = None
-    rotation: dict | None = None
-    scale: dict | None = None
+    action: str  # inspect, delete, duplicate, modify, color
+    position: list | dict | None = None
+    rotation: list | dict | None = None
+    scale: list | dict | None = None
     color: dict | None = None
 
 

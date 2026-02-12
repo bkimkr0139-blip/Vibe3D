@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vibe3D Unity Accelerator</title>
-    <link rel="stylesheet" href="/static/style.css?v=6">
+    <link rel="stylesheet" href="/static/style.css?v=7">
     <script type="importmap">
     {
         "imports": {
@@ -30,8 +30,11 @@
                     <button class="toolbar-btn" onclick="saveScene()" title="Save Scene">
                         <span class="tb-icon">&#128190;</span>
                     </button>
-                    <button class="toolbar-btn" onclick="undoLast()" title="Undo">
+                    <button class="toolbar-btn" onclick="undoLast()" title="Undo (Ctrl+Z)">
                         <span class="tb-icon">&#8630;</span>
+                    </button>
+                    <button class="toolbar-btn" onclick="toggleMoveMode()" title="Move Mode (W)" id="moveModeBtn">
+                        <span class="tb-icon">&#10021;</span>
                     </button>
                     <button class="toolbar-btn" onclick="refreshHierarchy()" title="Refresh Hierarchy">
                         <span class="tb-icon">&#8635;</span>
@@ -190,12 +193,15 @@
                     </div>
                     <div class="chat-input-area">
                         <div class="suggest-dropdown" id="suggestDropdown" style="display:none"></div>
-                        <textarea
-                            id="chatInput"
-                            placeholder="자연어 명령을 입력하세요... (Enter로 전송)"
-                            rows="1"
-                            spellcheck="false"
-                        ></textarea>
+                        <div class="chat-input-wrap">
+                            <span class="target-tag" id="targetTag" style="display:none" onclick="clearTargetTag()"></span>
+                            <textarea
+                                id="chatInput"
+                                placeholder="자연어 명령을 입력하세요... (Enter로 전송)"
+                                rows="1"
+                                spellcheck="false"
+                            ></textarea>
+                        </div>
                         <button class="chat-send" onclick="sendChat()" id="chatSendBtn" title="Send (Enter)">
                             <span>&#9654;</span>
                         </button>
@@ -302,7 +308,7 @@
     <script src="/static/plan-visual.js?v=6"></script>
     <script src="/static/suggest-ui.js?v=6"></script>
     <script src="/static/source-picker.js?v=6"></script>
-    <script src="/static/app.js?v=6"></script>
-    <script type="module" src="/static/scene-viewer.js?v=7"></script>
+    <script src="/static/app.js?v=8"></script>
+    <script type="module" src="/static/scene-viewer.js?v=8"></script>
 </body>
 </html>

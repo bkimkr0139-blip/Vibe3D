@@ -122,7 +122,7 @@ class PlanExecutor:
 
     def execute_undo(self, job_id: str) -> JobResult | None:
         """Execute the undo plan for a previous job."""
-        undo_plan = self._undo_store.get(job_id)
+        undo_plan = self._undo_store.pop(job_id, None)
         if not undo_plan:
             return None
         undo_job_id = f"undo-{job_id}"

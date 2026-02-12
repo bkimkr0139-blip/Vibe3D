@@ -1,8 +1,10 @@
 // Vibe3D — Three.js 3D Scene Viewer (ES Module)
 // Renders Unity scene objects from MCP hierarchy data with interactive controls.
+// Supports object selection, drag-to-move with TransformControls, and Unity sync.
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 class SceneViewer {
     constructor() {
@@ -10,6 +12,7 @@ class SceneViewer {
         this.scene = null;
         this.camera = null;
         this.controls = null;
+        this.transformControls = null;
         this.container = null;
         this.meshMap = new Map(); // name → mesh
         this.selectedMesh = null;
@@ -24,9 +27,13 @@ class SceneViewer {
         this._onResize = this.resize.bind(this);
         this._onClick = this._handleClick.bind(this);
         this.onSelect = null; // callback(name)
+        this.onMove = null;   // callback(name, unityPosition) — called after drag
+        this._moveMode = false; // toggle between view and move mode
+        this._dragStartPos = null; // position before drag (for undo detection)
     }
 
     get initialized() { return this._initialized; }
+    get moveMode() { return this._moveMode; }
 
     init(container) {
         if (this._initialized) {
@@ -56,7 +63,7 @@ class SceneViewer {
         this.camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 500);
         this.camera.position.set(15, 12, 15);
 
-        // Controls
+        // Orbit Controls
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.08;
@@ -64,6 +71,27 @@ class SceneViewer {
         this.controls.minDistance = 1;
         this.controls.maxDistance = 200;
         this.controls.maxPolarAngle = Math.PI * 0.95;
+
+        // Transform Controls (for drag-to-move)
+        this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
+        this.transformControls.setMode('translate');
+        this.transformControls.setSize(0.8);
+        this.transformControls.visible = false;
+        this.transformControls.enabled = false;
+        this.scene.add(this.transformControls);
+
+        // Disable orbit while dragging transform gizmo
+        this.transformControls.addEventListener('dragging-changed', (event) => {
+            this.controls.enabled = !event.value;
+            if (event.value) {
+                // Drag started — save position
+                const obj = this.transformControls.object;
+                if (obj) this._dragStartPos = obj.position.clone();
+            } else {
+                // Drag ended — sync to Unity
+                this._onDragEnd();
+            }
+        });
 
         // Lights
         const ambient = new THREE.AmbientLight(0x404060, 0.5);
@@ -121,6 +149,70 @@ class SceneViewer {
         }
     }
 
+    // ── Move Mode Toggle ────────────────────────────────────
+
+    /**
+     * Toggle move mode on/off.
+     * In move mode, clicking an object attaches the translate gizmo.
+     * Dragging the gizmo moves the object and syncs to Unity on release.
+     */
+    setMoveMode(enabled) {
+        this._moveMode = enabled;
+        if (!enabled) {
+            this.transformControls.detach();
+            this.transformControls.visible = false;
+            this.transformControls.enabled = false;
+            this.renderer.domElement.style.cursor = 'grab';
+        } else {
+            // If an object is already selected, attach gizmo
+            if (this.selectedMesh) {
+                this.transformControls.attach(this.selectedMesh);
+                this.transformControls.visible = true;
+                this.transformControls.enabled = true;
+            }
+            this.renderer.domElement.style.cursor = 'crosshair';
+        }
+    }
+
+    toggleMoveMode() {
+        this.setMoveMode(!this._moveMode);
+        return this._moveMode;
+    }
+
+    // ── Drag end → sync to Unity ────────────────────────────
+
+    _onDragEnd() {
+        const obj = this.transformControls.object;
+        if (!obj) return;
+
+        const name = obj.userData.objectName;
+        if (!name) return;
+
+        // Check if position actually changed
+        if (this._dragStartPos && obj.position.distanceTo(this._dragStartPos) < 0.001) {
+            return; // No meaningful movement
+        }
+
+        // Update selection outline position
+        if (this.selectionOutline) {
+            this.selectionOutline.position.copy(obj.position);
+        }
+
+        // Convert Three.js position → Unity position (negate Z)
+        const unityPos = {
+            x: parseFloat(obj.position.x.toFixed(4)),
+            y: parseFloat(obj.position.y.toFixed(4)),
+            z: parseFloat((-obj.position.z).toFixed(4)),
+        };
+
+        console.log(`[SceneViewer] Moved "${name}" to Unity pos:`, unityPos);
+
+        // Notify callback (app.js handles the API call)
+        if (this.onMove) {
+            this.onMove(name, unityPos);
+        }
+    }
+
     // ── Load scene from API ────────────────────────────────
 
     async loadFromAPI() {
@@ -143,6 +235,10 @@ class SceneViewer {
      */
     loadScene(data, preserveCamera = false) {
         const hadObjects = this.meshMap.size > 0;
+        // Detach transform controls before clearing
+        if (this.transformControls) {
+            this.transformControls.detach();
+        }
         this.clearObjects();
         const objects = data.objects || [];
         for (const obj of objects) {
@@ -160,6 +256,18 @@ class SceneViewer {
             }
         }
         this.controls.update();
+
+        // Re-attach transform controls if in move mode and object still exists
+        if (this._moveMode && this.selectedMesh) {
+            const name = this.selectedMesh.userData.objectName;
+            const newMesh = this.meshMap.get(name);
+            if (newMesh) {
+                this.selectedMesh = newMesh;
+                this.transformControls.attach(newMesh);
+                this.transformControls.visible = true;
+                this.transformControls.enabled = true;
+            }
+        }
     }
 
     // ── Object creation ────────────────────────────────────
@@ -328,10 +436,21 @@ class SceneViewer {
 
         // Smooth look-at
         this.controls.target.lerp(mesh.position, 0.5);
+
+        // In move mode, attach transform gizmo to selected object
+        if (this._moveMode) {
+            this.transformControls.attach(mesh);
+            this.transformControls.visible = true;
+            this.transformControls.enabled = true;
+        }
     }
 
     _handleClick(event) {
         if (!this.renderer || !this.camera) return;
+
+        // Don't process clicks on the transform gizmo itself
+        if (this.transformControls && this.transformControls.dragging) return;
+
         const rect = this.renderer.domElement.getBoundingClientRect();
         this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -345,6 +464,10 @@ class SceneViewer {
                 this.selectObject(name);
                 if (this.onSelect) this.onSelect(name);
             }
+        } else if (this._moveMode) {
+            // Clicking empty space in move mode — deselect
+            this.transformControls.detach();
+            this.transformControls.visible = false;
         }
     }
 
@@ -396,6 +519,10 @@ class SceneViewer {
     dispose() {
         if (this.animId) { cancelAnimationFrame(this.animId); this.animId = null; }
         window.removeEventListener('resize', this._onResize);
+        if (this.transformControls) {
+            this.transformControls.detach();
+            this.transformControls.dispose();
+        }
         if (this.renderer) {
             this.renderer.domElement.removeEventListener('click', this._onClick);
             this.container?.removeChild(this.renderer.domElement);
