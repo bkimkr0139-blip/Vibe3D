@@ -135,7 +135,18 @@ class UnityMCPClient:
         """Call a single MCP tool and return the result."""
         if not self._initialized:
             self.initialize()
-        results = self._request("tools/call", {"name": name, "arguments": arguments})
+        try:
+            results = self._request("tools/call", {"name": name, "arguments": arguments})
+        except ConnectionError as e:
+            if "404" in str(e):
+                # Session expired (MCP server restarted) — re-initialize
+                logger.warning("MCP session expired, re-initializing...")
+                self.session_id = None
+                self._initialized = False
+                self.initialize()
+                results = self._request("tools/call", {"name": name, "arguments": arguments})
+            else:
+                raise
         # Return last valid dict result; skip non-dict entries
         for r in reversed(results):
             if isinstance(r, dict):

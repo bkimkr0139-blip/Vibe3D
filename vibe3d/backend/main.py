@@ -106,6 +106,15 @@ _pending_plans: dict[str, dict] = {}  # job_id → {plan, method, command, creat
 # Server-side color overrides — populated after plan execution
 # Persists across scene data fetches so the 3D viewer reflects actual colors
 _scene_color_overrides: dict[str, dict] = {}  # object name → {"r":..,"g":..,"b":..}
+_3d_data_cache: dict | None = None  # cached 3d-data response
+
+
+async def _refresh_scene_and_3d_cache():
+    """Refresh scene_cache from MCP and invalidate the 3D data cache."""
+    global _3d_data_cache
+    await asyncio.to_thread(scene_cache.refresh, mcp_client)
+    _3d_data_cache = None
+
 
 # Working directory state
 _working_dir: str = config.UNITY_PROJECT_PATH
@@ -363,7 +372,7 @@ async def execute_command(req: CommandRequest):
     sc = scene_cache.get_context()
     if not sc.get("objects"):
         # Scene cache is empty — refresh from Unity before processing command
-        await asyncio.to_thread(scene_cache.refresh, mcp_client)
+        await _refresh_scene_and_3d_cache()
         sc = scene_cache.get_context()
 
     # Step 0: Check if command refers to a pending composite plan
@@ -579,7 +588,7 @@ async def approve_plan(job_id: str):
         # Invalidate + refresh scene cache so next commands have fresh context
         scene_cache.invalidate()
         try:
-            await asyncio.to_thread(scene_cache.refresh, mcp_client)
+            await _refresh_scene_and_3d_cache()
         except Exception as e:
             logger.warning("Scene cache refresh after approve failed: %s", e)
 
@@ -938,7 +947,7 @@ async def get_scene_context():
     ctx = scene_cache.get_context()
     if not ctx.get("objects"):
         # Try to refresh from MCP (blocking I/O → thread)
-        await asyncio.to_thread(scene_cache.refresh, mcp_client)
+        await _refresh_scene_and_3d_cache()
         ctx = scene_cache.get_context()
     return ctx
 
@@ -946,7 +955,7 @@ async def get_scene_context():
 @app.post("/api/scene/context/refresh")
 async def refresh_scene_context():
     """Force refresh scene context from Unity."""
-    await asyncio.to_thread(scene_cache.refresh, mcp_client)
+    await _refresh_scene_and_3d_cache()
     return scene_cache.get_context()
 
 
@@ -975,7 +984,7 @@ async def undo_job(job_id: str):
                 _scene_color_overrides.pop(a["target"], None)
         scene_cache.invalidate()
         try:
-            await asyncio.to_thread(scene_cache.refresh, mcp_client)
+            await _refresh_scene_and_3d_cache()
         except Exception as e:
             logger.warning("Scene cache refresh after undo failed: %s", e)
 
@@ -1603,44 +1612,36 @@ def _calc_bounds_and_camera(objects: list[dict]) -> tuple[dict, Optional[dict]]:
 
 
 @app.get("/api/scene/3d-data")
-async def get_scene_3d_data():
+async def get_scene_3d_data(refresh: bool = False):
     """Get scene hierarchy with transforms for Three.js 3D viewer.
 
-    Recursively fetches the full hierarchy via MCP paginated calls,
-    converts nodes with MeshRenderer/Light into renderable 3D objects.
+    Uses a memory cache to avoid expensive MCP calls on every request.
+    Pass ?refresh=true to force a fresh fetch from Unity.
     """
+    global _3d_data_cache
+
+    if _3d_data_cache and not refresh:
+        # Apply latest color overrides to cached objects
+        for obj in _3d_data_cache.get("objects", []):
+            override = _scene_color_overrides.get(obj["name"])
+            if override:
+                obj["color"] = override
+        return _3d_data_cache
+
     try:
-        # Step 1: Fetch root items
+        # Step 1: Fetch root items WITHOUT include_transform (fast, ~0.4s)
         resp = await asyncio.to_thread(
             mcp_client.tool_call, "manage_scene", {
                 "action": "get_hierarchy",
-                "include_transform": True,
-                "page_size": 50,
+                "max_depth": 1,
             }
         )
         data = _extract_mcp_data(resp)
         if not data or not data.get("items"):
             # Fallback: use cached scene context
-            ctx = scene_cache.get_context()
-            objects = []
-            for obj_data in (ctx.get("objects") or {}).values():
-                name = obj_data.get("name", "")
-                prim = _infer_primitive_3d(name)
-                if prim == "Empty":
-                    continue
-                objects.append({
-                    "name": name,
-                    "path": obj_data.get("path", name),
-                    "position": obj_data.get("position", {"x": 0, "y": 0, "z": 0}),
-                    "rotation": {"x": 0, "y": 0, "z": 0},
-                    "scale": obj_data.get("scale", {"x": 1, "y": 1, "z": 1}),
-                    "primitive": prim,
-                    "color": _scene_color_overrides.get(name) or _infer_color_3d(name),
-                })
-            bounds, cam = _calc_bounds_and_camera(objects)
-            return {"objects": objects, "bounds": bounds, "camera_suggestion": cam}
+            return _build_3d_from_scene_cache()
 
-        # Step 2: Process roots and recursively fetch children
+        # Step 2: For each root with children, recursively fetch WITH transforms
         origin = {"x": 0.0, "y": 0.0, "z": 0.0}
         objects: list[dict] = []
         fetch_tasks: list = []
@@ -1666,18 +1667,40 @@ async def get_scene_3d_data():
 
         bounds, camera_suggestion = _calc_bounds_and_camera(objects)
 
-        logger.info("[3D-data] Returning %d objects", len(objects))
-        return {
+        result = {
             "objects": objects,
             "bounds": bounds,
             "camera_suggestion": camera_suggestion,
         }
+        _3d_data_cache = result
+        logger.info("[3D-data] Fetched and cached %d objects", len(objects))
+        return result
 
-    except ConnectionError as e:
-        raise HTTPException(503, f"MCP connection error: {e}")
     except Exception as e:
-        logger.error("3D data error: %s\n%s", e, traceback.format_exc())
-        raise HTTPException(500, f"Scene data error: {e}")
+        logger.warning("3D data live fetch failed (%s), using cache fallback", e)
+        return _build_3d_from_scene_cache()
+
+
+def _build_3d_from_scene_cache() -> dict:
+    """Build 3D viewer data from the scene_cache (no MCP transform calls)."""
+    ctx = scene_cache.get_context()
+    objects = []
+    for obj_data in (ctx.get("objects") or {}).values():
+        name = obj_data.get("name", "")
+        prim = _infer_primitive_3d(name)
+        if prim == "Empty":
+            continue
+        objects.append({
+            "name": name,
+            "path": obj_data.get("path", name),
+            "position": obj_data.get("position", {"x": 0, "y": 0, "z": 0}),
+            "rotation": {"x": 0, "y": 0, "z": 0},
+            "scale": obj_data.get("scale", {"x": 1, "y": 1, "z": 1}),
+            "primitive": prim,
+            "color": _scene_color_overrides.get(name) or _infer_color_3d(name),
+        })
+    bounds, cam = _calc_bounds_and_camera(objects)
+    return {"objects": objects, "bounds": bounds, "camera_suggestion": cam}
 
 
 # ── Digital Twin ─────────────────────────────────────────────
@@ -1755,7 +1778,7 @@ async def startup():
         if await asyncio.to_thread(mcp_client.initialize):
             logger.info("MCP connected (session: %s)", mcp_client.session_id)
             # Pre-populate scene cache so commands have context immediately
-            await asyncio.to_thread(scene_cache.refresh, mcp_client)
+            await _refresh_scene_and_3d_cache()
             ctx = scene_cache.get_context()
             logger.info("Scene cache loaded: %d objects", len(ctx.get("objects", {})))
         else:
