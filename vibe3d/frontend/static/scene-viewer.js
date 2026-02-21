@@ -309,6 +309,8 @@ class SceneViewer {
         mesh.receiveShadow = !isLight;
         mesh.userData.objectName = obj.name;
         mesh.userData.objectPath = obj.path || '';
+        mesh.userData.tag = obj.tag || '';
+        mesh.userData.type = obj.type || '';
 
         this.scene.add(mesh);
         this.meshMap.set(obj.name, mesh);

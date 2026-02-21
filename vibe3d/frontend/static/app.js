@@ -14,6 +14,7 @@ let selectedFiles = new Set();
 // Unified mode — no separate command/chat toggle
 let sceneAutoRefresh = false;
 let sceneRefreshTimer = null;
+let _sceneObjects = {}; // name → {position, scale, path, primitive, color}
 let currentComponentId = null;
 let sceneViewMode = '3d'; // '3d' or 'screenshot'
 let scene3dInitialized = false;
@@ -67,6 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }).catch(() => {});
 
     setInterval(checkStatus, 15000);
+    checkWebglStatus();
 
     // Initialize 3D viewer (default mode)
     setTimeout(() => setSceneViewMode('3d'), 300);
@@ -229,13 +231,17 @@ function handleWS(event, data) {
         updateJob(data);
         setFooterStatus('');
         hideMinimap();
-        if (data.status === 'completed') {
+        if (data.status === 'completed' || data.status === 'partial') {
             // Track for quick undo if this job has an undo plan
             if (data.undo_available && data.job_id) {
                 _lastCompletedJobId = data.job_id;
             }
             refreshSceneView();
             refreshHierarchy();
+            // Start build status polling for WebGL builds
+            if (data.method === 'webgl_build') {
+                startWebglBuildPoll();
+            }
         }
     }
     if (event === 'action_progress') {
@@ -591,6 +597,8 @@ function init3DViewer() {
             });
             // Set target tag in command input
             setTargetTag(name);
+            // Notify parent window (HeatOps Nav X) of equipment selection
+            notifyEquipmentSelected(name);
         };
         // Drag-to-move callback — sync position to Unity via MCP
         window.sceneViewer.onMove = async (name, unityPos) => {
@@ -632,6 +640,11 @@ async function refresh3DView() {
         if (data) {
             const count = (data.objects || []).length;
             if (count > 0) setFooterStatus(`3D: ${count} objects loaded`);
+            // Cache scene objects for equipment selection events
+            _sceneObjects = {};
+            for (const obj of (data.objects || [])) {
+                if (obj.name) _sceneObjects[obj.name] = obj;
+            }
         }
         // Re-apply persistent color overrides after scene reload
         const overrideCount = Object.keys(_colorOverrides).length;
@@ -1575,6 +1588,109 @@ async function togglePlay() {
     sendChat();
 }
 
+// ── WebGL Viewer Setup & Build ──────────────────────────────
+
+async function webglSetup() {
+    const btn = document.getElementById('webglSetupBtn');
+    if (btn) btn.disabled = true;
+    addChatMsg('system', 'WebGL Viewer 설치 플랜을 생성 중...');
+    try {
+        const resp = await fetch(`${API}/api/webgl/setup`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) {
+            addChatMsg('system', `WebGL Setup 실패: ${data.detail || resp.statusText}`);
+            return;
+        }
+        if (data.status === 'plan_ready' && data.plan) {
+            showApprovalCard(data.job_id, data.plan, data.message || 'WebGL Viewer 설치');
+        }
+    } catch (e) {
+        addChatMsg('system', `WebGL Setup 오류: ${e.message}`);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function webglBuild() {
+    const defaultPath = 'C:\\Users\\User\\works\\WebGL';
+    const outputPath = prompt('WebGL 빌드 출력 경로를 입력하세요:', defaultPath);
+    if (!outputPath) return;
+
+    const btn = document.getElementById('webglBuildBtn');
+    if (btn) btn.disabled = true;
+    addChatMsg('system', `WebGL 빌드 플랜 생성 중... → ${outputPath}`);
+    try {
+        const resp = await fetch(`${API}/api/webgl/build`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ output_path: outputPath }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            addChatMsg('system', `WebGL Build 실패: ${data.detail || resp.statusText}`);
+            return;
+        }
+        if (data.status === 'plan_ready' && data.plan) {
+            showApprovalCard(data.job_id, data.plan, data.message || 'WebGL 빌드');
+        }
+    } catch (e) {
+        addChatMsg('system', `WebGL Build 오류: ${e.message}`);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+// Poll WebGL build status after build is triggered
+let _webglBuildPollTimer = null;
+function startWebglBuildPoll() {
+    stopWebglBuildPoll();
+    addChatMsg('system', '📦 WebGL 빌드 진행 중... (상태 모니터링 시작)');
+    const btn = document.getElementById('webglBuildBtn');
+    if (btn) btn.classList.add('active');
+
+    _webglBuildPollTimer = setInterval(async () => {
+        try {
+            const data = await (await fetch(`${API}/api/webgl/build-status`)).json();
+            if (data.status === 'completed') {
+                stopWebglBuildPoll();
+                const dur = data.duration_s ? ` (${data.duration_s}s)` : '';
+                addChatMsg('system', `✅ WebGL 빌드 완료${dur}: ${data.message || ''}`);
+                if (btn) btn.classList.remove('active');
+            } else if (data.status === 'failed') {
+                stopWebglBuildPoll();
+                addChatMsg('system', `❌ WebGL 빌드 실패: ${data.message || ''}`);
+                if (btn) btn.classList.remove('active');
+            }
+            // 'building' status — keep polling
+        } catch {
+            // ignore fetch errors during polling
+        }
+    }, 5000); // Poll every 5 seconds
+}
+
+function stopWebglBuildPoll() {
+    if (_webglBuildPollTimer) {
+        clearInterval(_webglBuildPollTimer);
+        _webglBuildPollTimer = null;
+    }
+}
+
+async function checkWebglStatus() {
+    try {
+        const data = await (await fetch(`${API}/api/webgl/status`)).json();
+        const setupBtn = document.getElementById('webglSetupBtn');
+        if (setupBtn) {
+            setupBtn.classList.toggle('active', !!data.installed);
+            setupBtn.title = data.installed
+                ? 'WebGL Viewer (installed)'
+                : 'WebGL Viewer Setup';
+        }
+        return data;
+    } catch {
+        return { installed: false };
+    }
+}
+
 function toggleMoveMode() {
     if (!window.sceneViewer || !window.sceneViewer.initialized) {
         addChatMsg('system', '3D 뷰가 초기화되지 않았습니다.');
@@ -1802,4 +1918,61 @@ function formatSize(bytes) {
     if (bytes < 1024) return bytes + 'B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(0) + 'KB';
     return (bytes / 1048576).toFixed(1) + 'MB';
+}
+
+// ── Equipment Selection (iframe → parent window) ────────────
+
+function inferAssetType(name) {
+    const n = name.toLowerCase();
+    if (/ferment|reactor|tank|vessel|digest/.test(n)) return 'vessel';
+    if (/valve/.test(n)) return 'valve';
+    if (/pump/.test(n)) return 'pump';
+    if (/pipe|duct/.test(n)) return 'pipe';
+    if (/heat.*exchanger|cooler|heater/.test(n)) return 'heat_exchanger';
+    if (/motor|engine|turbine|generator/.test(n)) return 'machine';
+    if (/sensor|gauge|meter/.test(n)) return 'instrument';
+    return 'equipment';
+}
+
+function extractTag(name) {
+    // Match P&ID tags: TCV-7742, V-101, P-201A, HX-3001, etc.
+    const m = name.match(/[A-Z]{1,4}-\d{2,5}[A-Z]?/);
+    return m ? m[0] : name;
+}
+
+function notifyEquipmentSelected(name) {
+    const obj = _sceneObjects[name];
+
+    const event = {
+        type: 'EQUIPMENT_SELECTED',
+        assetId: obj?.path || name,
+        assetTag: obj?.tag || extractTag(name),       // prefer backend tag
+        assetName: name,
+        assetType: obj?.type || inferAssetType(name),  // prefer backend type
+        metadata: {
+            position: obj?.position || null,
+            scale: obj?.scale || null,
+            path: obj?.path || name,
+            primitive: obj?.primitive || null,
+            color: obj?.color || null,
+        },
+        timestamp: Date.now(),
+    };
+
+    console.log('[Vibe3D → HeatOps] EQUIPMENT_SELECTED', event);
+
+    // Send to parent window (iframe → HeatOps Nav X)
+    if (window.parent !== window) {
+        window.parent.postMessage(event, '*');
+        console.log('[Vibe3D] postMessage sent to parent window');
+    } else {
+        console.log('[Vibe3D] Not in iframe — postMessage skipped (direct access)');
+    }
+
+    // Also store on backend for REST polling
+    fetch(`${API}/api/equipment/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(event),
+    }).catch((err) => console.warn('[Vibe3D] equipment event POST failed:', err));
 }

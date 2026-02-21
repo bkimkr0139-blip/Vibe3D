@@ -35,6 +35,7 @@ from .composite_analyzer import composite_analyze
 from .workflow_manager import WorkflowManager
 from .nlu_engine import NLUEngine
 from .component_library import ComponentLibrary
+from .webgl_builder import generate_setup_plan, generate_build_plan
 from ..mcp_client import UnityMCPClient
 
 # ── Logging ──────────────────────────────────────────────────
@@ -107,6 +108,7 @@ _pending_plans: dict[str, dict] = {}  # job_id → {plan, method, command, creat
 # Persists across scene data fetches so the 3D viewer reflects actual colors
 _scene_color_overrides: dict[str, dict] = {}  # object name → {"r":..,"g":..,"b":..}
 _3d_data_cache: dict | None = None  # cached 3d-data response
+_last_equipment_event: dict = {}  # last selected equipment event (for REST polling)
 
 
 async def _refresh_scene_and_3d_cache():
@@ -279,6 +281,16 @@ class ComponentInstantiateRequest(BaseModel):
 
 class DrawingAnalyzeRequest(BaseModel):
     image_path: str
+
+
+class EquipmentEventRequest(BaseModel):
+    type: str = "EQUIPMENT_SELECTED"
+    assetId: str = ""
+    assetTag: str = ""
+    assetName: str = ""
+    assetType: str = ""
+    metadata: dict = {}
+    timestamp: float = 0
 
 
 # ── WebSocket broadcast ──────────────────────────────────────
@@ -534,6 +546,19 @@ async def approve_plan(job_id: str):
 
     logger.info("Job %s: APPROVED by user, executing %d actions", job_id, len(plan.get("actions", [])))
     await broadcast("plan_approved", {"job_id": job_id})
+
+    # Track WebGL build state for monitoring
+    if method == "webgl_build":
+        # Extract output_path from plan description
+        desc = plan.get("description", "")
+        build_path = desc.replace("WebGL 빌드 → ", "").strip() if "→" in desc else ""
+        _webgl_build_state.update({
+            "status": "building",
+            "output_path": build_path,
+            "started_at": time.time(),
+            "completed_at": 0.0,
+            "message": "빌드 시작...",
+        })
 
     # Progress callback via WebSocket
     loop = asyncio.get_running_loop()
@@ -999,6 +1024,241 @@ async def undo_job(job_id: str):
     return {"job_id": undo_result.job_id, "result": _safe_asdict(undo_result)}
 
 
+# ── WebGL Viewer Setup & Build ───────────────────────────────
+
+class WebGLBuildRequest(BaseModel):
+    output_path: str
+
+
+@app.post("/api/webgl/setup")
+async def webgl_setup():
+    """Generate a plan to install WebGL viewer (CameraRig + scripts + UI).
+
+    Returns plan_ready for user approval via /api/command/{job_id}/approve.
+    """
+    job_id = str(uuid.uuid4())[:8]
+    plan = generate_setup_plan()
+    method = "webgl_setup"
+
+    is_valid, errors, warnings = validate_plan_extended(plan, scene_cache.get_context())
+    if not is_valid:
+        raise HTTPException(400, f"Plan validation failed: {'; '.join(errors[:3])}")
+
+    _pending_plans[job_id] = {
+        "plan": plan,
+        "method": method,
+        "command": "WebGL Viewer Setup",
+        "created_at": time.time(),
+    }
+
+    await broadcast("plan_preview", {
+        "job_id": job_id,
+        "plan": plan,
+        "method": method,
+        "confirmation_message": plan.get("confirmation_message", ""),
+    })
+
+    return {
+        "job_id": job_id,
+        "status": "plan_ready",
+        "message": plan.get("confirmation_message", ""),
+        "plan": plan,
+    }
+
+
+@app.post("/api/webgl/build")
+async def webgl_build(req: WebGLBuildRequest):
+    """Generate a plan to build WebGL to the specified output path.
+
+    Automatically includes viewer setup (CameraRig, scripts, components)
+    if not already installed in the scene.
+
+    Returns plan_ready for user approval via /api/command/{job_id}/approve.
+    """
+    output_path = req.output_path.strip()
+    if not output_path:
+        raise HTTPException(400, "output_path is required")
+
+    # Auto-detect if viewer setup is needed
+    ctx = scene_cache.get_context()
+    objects = ctx.get("objects", {})
+    obj_iter = objects.values() if isinstance(objects, dict) else objects
+    has_rig = any(
+        (o.get("name") if isinstance(o, dict) else str(o)) == "CameraRig"
+        for o in obj_iter
+    )
+
+    need_setup = True
+    components_only = False
+
+    if has_rig:
+        # CameraRig exists — check if OrbitPanZoomController is attached via
+        # a harmless set_property call (sets rotateSpeed to its default value).
+        try:
+            resp = await asyncio.to_thread(
+                mcp_client.tool_call, "manage_components",
+                {
+                    "action": "set_property",
+                    "target": "CameraRig",
+                    "component_type": "OrbitPanZoomController",
+                    "property": "rotateSpeed",
+                    "value": 0.25,
+                    "search_method": "by_name",
+                },
+            )
+            # Parse success from response
+            ok = False
+            if isinstance(resp, dict):
+                rd = resp.get("result", resp)
+                if isinstance(rd, dict) and not rd.get("isError", False):
+                    for item in rd.get("content", []):
+                        if item.get("type") == "text":
+                            try:
+                                ok = json.loads(item["text"]).get("success", False)
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            break
+            if ok:
+                need_setup = False
+                logger.info("[WebGL] OrbitPanZoomController detected on CameraRig → skip setup")
+            else:
+                need_setup = True
+                components_only = True
+                logger.info("[WebGL] CameraRig exists but OrbitPanZoomController missing → components_only setup")
+        except Exception as e:
+            logger.warning("[WebGL] Component check failed, assuming setup needed: %s", e)
+            need_setup = True
+            components_only = True
+    else:
+        logger.info("[WebGL] CameraRig not found → full setup")
+
+    job_id = str(uuid.uuid4())[:8]
+    plan = generate_build_plan(
+        output_path,
+        include_setup=need_setup,
+        components_only=components_only,
+    )
+    method = "webgl_build"
+
+    is_valid, errors, warnings = validate_plan_extended(plan, scene_cache.get_context())
+    if not is_valid:
+        raise HTTPException(400, f"Plan validation failed: {'; '.join(errors[:3])}")
+
+    _pending_plans[job_id] = {
+        "plan": plan,
+        "method": method,
+        "command": f"WebGL Build → {output_path}",
+        "created_at": time.time(),
+    }
+
+    await broadcast("plan_preview", {
+        "job_id": job_id,
+        "plan": plan,
+        "method": method,
+        "confirmation_message": plan.get("confirmation_message", ""),
+    })
+
+    return {
+        "job_id": job_id,
+        "status": "plan_ready",
+        "message": plan.get("confirmation_message", ""),
+        "plan": plan,
+    }
+
+
+@app.get("/api/webgl/status")
+async def webgl_status():
+    """Check if WebGL viewer components are installed in the scene."""
+    ctx = scene_cache.get_context()
+    objects = ctx.get("objects", {})
+
+    has_camera_rig = False
+    has_pivot = False
+    has_viewer_canvas = False
+
+    obj_iter = objects.values() if isinstance(objects, dict) else objects
+    for obj in obj_iter:
+        name = obj.get("name", "") if isinstance(obj, dict) else str(obj)
+        if name == "CameraRig":
+            has_camera_rig = True
+        elif name == "Pivot":
+            has_pivot = True
+        elif name == "ViewerCanvas":
+            has_viewer_canvas = True
+
+    installed = has_camera_rig and has_pivot and has_viewer_canvas
+    return {
+        "installed": installed,
+        "camera_rig": has_camera_rig,
+        "pivot": has_pivot,
+        "viewer_canvas": has_viewer_canvas,
+    }
+
+
+# Track WebGL build state
+_webgl_build_state: dict[str, Any] = {
+    "status": "idle",        # idle | building | completed | failed
+    "output_path": "",
+    "started_at": 0.0,
+    "completed_at": 0.0,
+    "message": "",
+}
+
+
+@app.get("/api/webgl/build-status")
+async def webgl_build_status():
+    """Check WebGL build status by monitoring output directory + Unity console."""
+    state = _webgl_build_state.copy()
+
+    if state["status"] == "building" and state["output_path"]:
+        output_path = Path(state["output_path"])
+        # Check if build output has been updated since build started
+        started = state["started_at"]
+        index_html = output_path / "index.html"
+        build_dir = output_path / "Build"
+
+        if index_html.exists() and index_html.stat().st_mtime > started:
+            # Build output updated — build is done
+            build_files = []
+            if build_dir.exists():
+                build_files = [f.name for f in build_dir.iterdir() if f.is_file()]
+            state["status"] = "completed"
+            state["completed_at"] = index_html.stat().st_mtime
+            state["message"] = f"빌드 완료 ({len(build_files)}개 파일)"
+            state["build_files"] = build_files
+            state["duration_s"] = round(state["completed_at"] - started, 1)
+            _webgl_build_state.update(state)
+        else:
+            # Still building — check elapsed time
+            elapsed = time.time() - started
+            state["elapsed_s"] = round(elapsed, 1)
+            state["message"] = f"빌드 진행 중... ({int(elapsed)}초 경과)"
+
+            # Check console for errors
+            try:
+                console = await asyncio.to_thread(mcp_client.read_console, 10)
+                result = console.get("result", console)
+                for item in result.get("content", []):
+                    if item.get("type") == "text":
+                        import json as _json
+                        parsed = _json.loads(item["text"])
+                        for entry in parsed.get("data", []):
+                            msg = entry if isinstance(entry, str) else entry.get("message", "")
+                            if "[Vibe3D]" in str(msg):
+                                if "failed" in str(msg).lower() or "exception" in str(msg).lower():
+                                    state["status"] = "failed"
+                                    state["message"] = str(msg)[:200]
+                                    _webgl_build_state.update(state)
+                                elif "succeeded" in str(msg).lower():
+                                    state["status"] = "completed"
+                                    state["message"] = str(msg)[:200]
+                                    _webgl_build_state.update(state)
+            except Exception:
+                pass
+
+    return state
+
+
 # ── Source Analysis ──────────────────────────────────────────
 
 @app.post("/api/source/analyze")
@@ -1372,6 +1632,24 @@ async def analyze_drawing(req: DrawingAnalyzeRequest):
     return {"analysis": result, "image_path": req.image_path}
 
 
+# ── Equipment Selection (iframe → parent app) ────────────
+
+@app.post("/api/equipment/event")
+async def equipment_event(req: EquipmentEventRequest):
+    """Receive equipment selection event from frontend (postMessage + REST)."""
+    global _last_equipment_event
+    _last_equipment_event = req.model_dump()
+    await broadcast("equipment_selected", _last_equipment_event)
+    logger.info("Equipment selected: %s (%s)", req.assetName, req.assetTag)
+    return {"status": "ok"}
+
+
+@app.get("/api/equipment/selected")
+async def equipment_selected():
+    """Get last selected equipment info (REST polling for parent app)."""
+    return _last_equipment_event or {"type": "NONE"}
+
+
 # ── Screenshot Serving ───────────────────────────────────
 
 @app.get("/api/screenshots/latest")
@@ -1408,6 +1686,33 @@ def _infer_primitive_3d(name: str) -> str:
     if any(k in n for k in ("camera", "eventsystem")):
         return "Empty"
     return "Cube"
+
+
+def _extract_asset_tag(name: str) -> str:
+    """Extract P&ID-style asset tag from object name (e.g. 'TCV-7742', 'V-101')."""
+    import re
+    m = re.search(r'[A-Z]{1,4}-\d{2,5}[A-Z]?', name)
+    return m.group(0) if m else name
+
+
+def _infer_asset_type(name: str) -> str:
+    """Infer equipment type from object name for HeatOps matching."""
+    n = name.lower()
+    if any(k in n for k in ("ferment", "reactor", "tank", "vessel", "digest")):
+        return "VESSEL"
+    if "valve" in n:
+        return "CONTROL_VALVE" if "control" in n else "VALVE"
+    if "pump" in n:
+        return "PUMP"
+    if any(k in n for k in ("pipe", "duct")):
+        return "PIPE"
+    if any(k in n for k in ("heat", "exchanger", "cooler", "heater")):
+        return "HEAT_EXCHANGER"
+    if any(k in n for k in ("motor", "engine", "turbine", "generator")):
+        return "MACHINE"
+    if any(k in n for k in ("sensor", "gauge", "meter", "instrument")):
+        return "INSTRUMENT"
+    return "EQUIPMENT"
 
 
 def _infer_color_3d(name: str) -> dict:
@@ -1502,6 +1807,8 @@ def _node_to_3d_obj(
         obj_dict = {
             "name": name,
             "path": node.get("path", name),
+            "tag": _extract_asset_tag(name),
+            "type": _infer_asset_type(name),
             "position": world_pos,
             "rotation": rotation,
             "scale": scale,
@@ -1693,6 +2000,8 @@ def _build_3d_from_scene_cache() -> dict:
         objects.append({
             "name": name,
             "path": obj_data.get("path", name),
+            "tag": _extract_asset_tag(name),
+            "type": _infer_asset_type(name),
             "position": obj_data.get("position", {"x": 0, "y": 0, "z": 0}),
             "rotation": {"x": 0, "y": 0, "z": 0},
             "scale": obj_data.get("scale", {"x": 1, "y": 1, "z": 1}),

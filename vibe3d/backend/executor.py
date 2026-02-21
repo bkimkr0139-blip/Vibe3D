@@ -207,10 +207,21 @@ class PlanExecutor:
                             except Exception:
                                 pass
 
+                    # Check if batch contains non-batchable tools → execute individually
+                    is_non_batchable = any(
+                        cmd.get("tool", "") in self.NON_BATCHABLE_TOOLS
+                        for cmd in batch
+                    )
+
                     t_batch = time.time()
-                    resp = self.mcp.batch_execute(batch)
+                    if is_non_batchable:
+                        # Execute each command individually via direct tool_call
+                        batch_result = self._execute_individually(batch)
+                    else:
+                        resp = self.mcp.batch_execute(batch)
+                        batch_result = self._parse_batch_result(resp)
                     batch_elapsed = time.time() - t_batch
-                    batch_result = self._parse_batch_result(resp)
+
                     all_success += batch_result["success"]
                     all_fail += batch_result["fail"]
                     result.results.append({
@@ -252,6 +263,19 @@ class PlanExecutor:
                     logger.error("[Executor] Batch %d execution failed: %s", batch_num, e)
 
                 global_idx += len(batch)
+
+            # Post-phase: if this phase was a refresh_unity with compile,
+            # wait for Unity to finish compiling before proceeding.
+            if phase_commands and any(
+                cmd.get("tool") == "refresh_unity"
+                and cmd.get("params", {}).get("compile", "none") != "none"
+                for cmd in phase_commands
+            ):
+                logger.info(
+                    "[Executor] Post-compile wait: %ds for Unity script compilation",
+                    self.COMPILE_WAIT_SECONDS,
+                )
+                time.sleep(self.COMPILE_WAIT_SECONDS)
 
         result.success_count = all_success
         result.fail_count = all_fail
@@ -302,6 +326,20 @@ class PlanExecutor:
 
         return result
 
+    # Tools that are NOT supported by batch_execute and must run individually
+    NON_BATCHABLE_TOOLS = frozenset({
+        "create_script", "create_shader", "create_scriptable_object",
+        "modify_scriptable_object", "run_tests", "execute_menu_item",
+        "manage_components", "manage_editor", "manage_material",
+    })
+
+    # Tools that act as synchronization barriers (wait for previous work)
+    SYNC_BARRIER_TOOLS = frozenset({"refresh_unity"})
+
+    # Seconds to wait after a refresh_unity phase that requested compilation,
+    # giving Unity time to finish compiling new/changed scripts.
+    COMPILE_WAIT_SECONDS = 15
+
     @staticmethod
     def _split_by_dependency(commands: list[dict]) -> list[list[dict]]:
         """Split commands into dependency-aware phases (list of batches).
@@ -311,11 +349,74 @@ class PlanExecutor:
         Phase 2: modifier commands (materials, components, etc.) that reference
                   objects created in phase 1.
 
+        Additionally, non-batchable tools (create_script, etc.) and sync
+        barriers (refresh_unity) force phase splits so that:
+          scripts → refresh → dependent actions
+        run in the correct sequential order.
+
         Returns a list of batches (list of lists). Each batch will be sent
-        as a separate batch_execute call to avoid the MCP timing issue where
-        modify commands fail because the target object hasn't been registered
-        yet within the same batch_execute call.
+        as a separate batch_execute call (or individual calls for non-batchable
+        tools) to avoid timing issues.
         """
+        # Check if any commands need special phasing
+        has_non_batchable = any(
+            cmd.get("tool", "") in PlanExecutor.NON_BATCHABLE_TOOLS
+            for cmd in commands
+        )
+        has_barrier = any(
+            cmd.get("tool", "") in PlanExecutor.SYNC_BARRIER_TOOLS
+            for cmd in commands
+        )
+
+        if has_non_batchable or has_barrier:
+            # Multi-phase split: group into sequential phases separated by
+            # non-batchable commands and sync barriers.
+            phases: list[list[dict]] = []
+            current_batch: list[dict] = []
+
+            for cmd in commands:
+                tool = cmd.get("tool", "")
+
+                if tool in PlanExecutor.SYNC_BARRIER_TOOLS:
+                    # Flush current batch, then barrier in its own phase
+                    if current_batch:
+                        phases.append(current_batch)
+                        current_batch = []
+                    phases.append([cmd])
+                elif tool in PlanExecutor.NON_BATCHABLE_TOOLS:
+                    # Non-batchable: flush current, then solo phase
+                    if current_batch:
+                        phases.append(current_batch)
+                        current_batch = []
+                    phases.append([cmd])
+                else:
+                    current_batch.append(cmd)
+
+            if current_batch:
+                phases.append(current_batch)
+
+            # Further split batchable phases into creates/modifiers
+            final_phases: list[list[dict]] = []
+            for phase in phases:
+                tool0 = phase[0].get("tool", "") if phase else ""
+                if tool0 in PlanExecutor.NON_BATCHABLE_TOOLS or tool0 in PlanExecutor.SYNC_BARRIER_TOOLS:
+                    final_phases.append(phase)
+                else:
+                    # Apply standard creates/modifiers split
+                    sub = PlanExecutor._split_creates_modifiers(phase)
+                    final_phases.extend(sub)
+
+            logger.info("[Executor] Multi-phase split: %d phases (%s)",
+                        len(final_phases),
+                        " → ".join(f"{len(p)}cmd" for p in final_phases))
+            return final_phases
+
+        # Standard 2-phase split for regular plans
+        return PlanExecutor._split_creates_modifiers(commands)
+
+    @staticmethod
+    def _split_creates_modifiers(commands: list[dict]) -> list[list[dict]]:
+        """Standard 2-phase split: creates/scene/editor first, modifiers second."""
         creates: list[dict] = []
         modifiers: list[dict] = []
 
@@ -326,14 +427,13 @@ class PlanExecutor:
 
             if tool == "manage_gameobject" and action in ("create", "delete"):
                 creates.append(cmd)
-            elif tool == "manage_scene":
+            elif tool == "manage_scene" and action != "save":
                 creates.append(cmd)
             elif tool == "manage_editor":
                 creates.append(cmd)
             else:
                 modifiers.append(cmd)
 
-        # If there are no modifiers or no creates, single phase
         if not modifiers or not creates:
             return [commands]
 
@@ -425,3 +525,149 @@ class PlanExecutor:
 
         # Fallback: treat entire response as having unknown results
         return {"success": 0, "fail": 0, "details": []}
+
+    # Tools that should be retried on failure (e.g. menu items that depend on compilation)
+    RETRYABLE_TOOLS = frozenset({
+        "execute_menu_item", "manage_components",
+        "manage_editor", "manage_material",
+    })
+    MAX_RETRIES = 3
+    RETRY_DELAY_SECONDS = 3
+
+    @staticmethod
+    def _check_resp_ok(resp: Any) -> bool:
+        """Check if an MCP response indicates success."""
+        import json as _json
+        if not isinstance(resp, dict):
+            return False
+        rd = resp.get("result", resp)
+        if not isinstance(rd, dict):
+            return False
+        sc = rd.get("structuredContent", {})
+        if sc.get("success"):
+            return True
+        if not rd.get("isError", False):
+            for item in rd.get("content", []):
+                if item.get("type") == "text":
+                    try:
+                        return _json.loads(item["text"]).get("success", False)
+                    except (_json.JSONDecodeError, TypeError):
+                        pass
+                    break
+        return False
+
+    def _execute_individually(self, commands: list[dict]) -> dict[str, Any]:
+        """Execute commands one-by-one via individual tool_call (not batch).
+
+        Used for tools not supported by batch_execute (e.g. create_script).
+        Includes retry logic for transient failures (e.g. menu items not yet
+        available after compilation).
+        """
+        import json as _json
+        success = 0
+        fail = 0
+        details: list[dict] = []
+
+        for cmd in commands:
+            tool = cmd.get("tool", "")
+            params = cmd.get("params", {})
+            retries = self.MAX_RETRIES if tool in self.RETRYABLE_TOOLS else 0
+
+            for attempt in range(1 + retries):
+                try:
+                    resp = self.mcp.tool_call(tool, params)
+                    ok = False
+                    err_text = ""
+                    if isinstance(resp, dict):
+                        result_data = resp.get("result", resp)
+                        if isinstance(result_data, dict):
+                            # Check structuredContent first (fastest)
+                            sc = result_data.get("structuredContent", {})
+                            if sc.get("success"):
+                                ok = True
+                            elif not result_data.get("isError", False):
+                                # Parse text content
+                                for item in result_data.get("content", []):
+                                    if item.get("type") == "text":
+                                        try:
+                                            parsed = _json.loads(item["text"])
+                                            ok = parsed.get("success", False)
+                                            if not ok:
+                                                err_text = parsed.get("error", parsed.get("message", ""))
+                                        except (_json.JSONDecodeError, TypeError):
+                                            err_text = item.get("text", "")[:200]
+                                        break
+                            else:
+                                # isError=True — extract error text
+                                for item in result_data.get("content", []):
+                                    if item.get("type") == "text":
+                                        err_text = item.get("text", "")[:200]
+                                        break
+
+                    # Auto-fix: create_script "already exists" → delete + recreate
+                    if not ok and tool == "create_script" and "already exists" in str(err_text):
+                        script_path = params.get("path", "")
+                        logger.info("[Executor] Script already exists, deleting and recreating: %s", script_path)
+                        try:
+                            self.mcp.tool_call("manage_asset", {"action": "delete", "path": script_path})
+                            time.sleep(0.5)
+                            resp2 = self.mcp.tool_call(tool, params)
+                            ok = self._check_resp_ok(resp2)
+                            if ok:
+                                logger.info("[Executor] create_script succeeded after delete+recreate")
+                        except Exception as e2:
+                            logger.warning("[Executor] delete+recreate fallback failed: %s", e2)
+
+                    # Auto-fix: manage_material "already exists" → delete + recreate
+                    if not ok and tool == "manage_material" and "already exists" in str(err_text).lower():
+                        mat_path = params.get("material_path", "")
+                        logger.info("[Executor] Material already exists, deleting and recreating: %s", mat_path)
+                        try:
+                            self.mcp.tool_call("manage_asset", {"action": "delete", "path": mat_path})
+                            time.sleep(0.5)
+                            resp2 = self.mcp.tool_call(tool, params)
+                            ok = self._check_resp_ok(resp2)
+                            if ok:
+                                logger.info("[Executor] manage_material succeeded after delete+recreate")
+                        except Exception as e2:
+                            logger.warning("[Executor] material delete+recreate failed: %s", e2)
+
+                    # Auto-fix: manage_editor (add_layer) — layer may already exist, treat as OK
+                    if not ok and tool == "manage_editor":
+                        action_name = params.get("action", "")
+                        if action_name == "add_layer" and ("already" in str(err_text).lower() or "exists" in str(err_text).lower()):
+                            logger.info("[Executor] Layer likely already exists, treating as OK")
+                            ok = True
+                        elif action_name == "add_layer" and not err_text:
+                            # Some MCP versions don't report success clearly for add_layer
+                            logger.info("[Executor] manage_editor add_layer returned no error text, treating as OK")
+                            ok = True
+
+                    if ok:
+                        if attempt > 0:
+                            logger.info("[Executor] %s succeeded on retry %d", tool, attempt)
+                        success += 1
+                        details.append({"succeeded": True, "tool": tool})
+                        break
+                    else:
+                        if attempt < retries:
+                            logger.info(
+                                "[Executor] %s failed (attempt %d/%d), retrying in %ds: %s",
+                                tool, attempt + 1, 1 + retries, self.RETRY_DELAY_SECONDS, err_text,
+                            )
+                            time.sleep(self.RETRY_DELAY_SECONDS)
+                        else:
+                            fail += 1
+                            details.append({"succeeded": False, "tool": tool})
+                            logger.warning("[Executor] %s failed after %d attempts: %s", tool, attempt + 1, err_text)
+
+                except Exception as e:
+                    if attempt < retries:
+                        logger.info("[Executor] %s exception (attempt %d/%d), retrying: %s", tool, attempt + 1, 1 + retries, e)
+                        time.sleep(self.RETRY_DELAY_SECONDS)
+                    else:
+                        fail += 1
+                        details.append({"succeeded": False, "tool": tool})
+                        logger.warning("[Executor] Individual call %s failed: %s", tool, e)
+
+        return {"success": success, "fail": fail, "details": details}
