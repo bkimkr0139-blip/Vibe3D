@@ -1,0 +1,689 @@
+================================================================================
+  Vibe3D Unity Accelerator — System Architecture & Feature Reference
+  Version: v2.4 (2026-02-23)
+================================================================================
+
+1. OVERVIEW
+================================================================================
+
+  Vibe3D는 자연어 명령으로 Unity 3D 씬을 제어하는 AI-First Unity 가속기이다.
+  사용자가 한국어/영어로 명령을 입력하면, AI(Claude Sonnet)가 실행 계획을 생성하고
+  사용자 승인 후 MCP(Model Context Protocol)를 통해 Unity Editor에 반영한다.
+
+  - 총 코드량: ~20,000줄 (Python 12,400+ / Frontend 5,900+)
+  - 파일 수: 34개
+  - API 엔드포인트: 45+개
+  - MCP 액션 타입: 63종
+
+  Web UI: http://127.0.0.1:8091
+  API Docs: http://127.0.0.1:8091/docs
+
+
+2. SYSTEM ARCHITECTURE
+================================================================================
+
+  ┌─────────────┐     ┌──────────────────────┐     ┌───────────┐     ┌──────────┐
+  │ Browser     │◄───►│ FastAPI Backend       │◄───►│ MCP Server│◄───►│ Unity    │
+  │ Web UI      │     │ (Orchestrator)        │     │ (SSE)     │     │ Editor   │
+  │ :8091       │     │ :8091                 │     │ :8080     │     │          │
+  └─────────────┘     └──────────┬───────────┘     └───────────┘     └──────────┘
+                                 │
+                      ┌──────────▼───────────┐
+                      │ Claude Sonnet API    │
+                      │ (Optional)           │
+                      └──────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────────────────────┐
+  │ HeatOps Nav X (Parent Window)                                             │
+  │   └─ iframe: https://<tunnel>.trycloudflare.com (Vibe3D)                 │
+  │        ├─ EQUIPMENT_SELECTED (Vibe3D → HeatOps) — 설비 클릭 알림         │
+  │        └─ SELECT_OBJECT (HeatOps → Vibe3D) — 설비 선택 요청              │
+  └────────────────────────────────────────────────────────────────────────────┘
+
+
+3. DIRECTORY STRUCTURE
+================================================================================
+
+  vibe3d/
+  ├── __init__.py
+  ├── requirements.txt             # 의존성 (fastapi, uvicorn, anthropic 등)
+  ├── .env.example                 # 환경변수 템플릿
+  ├── run.py                (106줄) # PyInstaller 진입점
+  ├── vibe3d.spec                  # PyInstaller 빌드 스펙
+  ├── build_exe.bat          (62줄) # EXE 빌드 자동화
+  ├── README.md                    # 배포 가이드
+  │
+  ├── backend/                     # ~12,400줄 (15 파일)
+  │   ├── __init__.py
+  │   ├── config.py           (58줄) # 환경 설정, 경로, API 키
+  │   ├── main.py          (2,102줄) # FastAPI 메인: 45+ 라우트, WS, 승인, 3D, 색상
+  │   ├── nlu_engine.py      (526줄) # Claude AI NLU: 자연어 → 실행 계획
+  │   ├── plan_generator.py(1,830줄) # 템플릿 기반 명령 파싱 (30+ 패턴)
+  │   ├── plan_validator.py(1,141줄) # JSON 스키마 검증 (63 액션 타입)
+  │   ├── executor.py        (413줄) # MCP 배치 실행 + 되돌리기 생성
+  │   ├── scene_cache.py     (588줄) # 씬 계층 캐시 (TTL 5초)
+  │   ├── suggestion_engine.py(521줄) # 명령 자동완성 + 추천
+  │   ├── error_analyzer.py  (570줄) # 에러 분류 + 자동 복구
+  │   ├── source_analyzer.py(1,007줄) # 파일 분석 (PNG, FBX, CSV 등)
+  │   ├── composite_analyzer.py(504줄) # 다중 파일 관계 분석
+  │   ├── workflow_manager.py (492줄) # 워크플로우 템플릿
+  │   ├── component_library.py(607줄) # 산업 장비 템플릿 (용기, 밸브, 펌프)
+  │   ├── fermentation_bridge.py(450줄) # 디지털 트윈: 발효 시뮬레이션 ↔ Unity
+  │   └── webgl_builder.py   (927줄) # WebGL 빌더 (카메라, 빌드 플랜)
+  │
+  ├── mcp_client/                  # 272줄
+  │   ├── __init__.py
+  │   └── client.py          (269줄) # UnityMCPClient (HTTP+SSE, JSON-RPC 2.0)
+  │
+  ├── frontend/                    # ~5,900줄
+  │   ├── index.html         (322줄) # 3컬럼 레이아웃 (HTML)
+  │   └── static/
+  │       ├── style.css    (1,308줄) # 다크 테마 디자인 시스템
+  │       ├── app.js       (2,021줄) # 메인 앱 (승인, 되돌리기, 채팅, 장비선택)
+  │       ├── scene-viewer.js(541줄) # Three.js 3D 뷰어 (ES6 모듈)
+  │       ├── minimap.js     (392줄) # 2D 미니맵 캔버스
+  │       ├── plan-visual.js (518줄) # 플랜 타임라인 시각화
+  │       ├── suggest-ui.js  (277줄) # 자동완성 드롭다운
+  │       └── source-picker.js(462줄) # 파일 품질 분석 UI
+  │
+  ├── docs/
+  │   ├── equipment-selection-api.md  # HeatOps 연동 가이드
+  │   ├── schemas/
+  │   │   └── unity_plan.schema.json (822줄) # JSON Schema Draft-07
+  │   └── prompts/
+  │       └── examples.txt           # 한영 명령 예제
+  │
+  ├── data/
+  │   └── workflows.json     (286줄) # 워크플로우 템플릿 라이브러리
+  │
+  ├── scripts/
+  │   ├── start_all_windows.ps1      # Windows 원클릭 시작
+  │   └── start_all_macos.sh         # macOS 원클릭 시작
+  │
+  └── assets/
+      ├── import/                    # 업로드 소스 파일
+      ├── library/                   # 머티리얼 프리셋, 템플릿
+      └── generated/                 # 스크린샷, 내보내기
+
+
+4. AI-FIRST COMMAND PIPELINE
+================================================================================
+
+  사용자 입력 (한국어/영어)
+       │
+       ▼
+  ┌─────────────────────────────┐
+  │ NLU Engine (Claude Sonnet)  │  ← ANTHROPIC_API_KEY 필요
+  │  - 오타 허용 ("바란색"→파란색) │
+  │  - 씬 컨텍스트 주입 (607객체) │
+  │  - 한영 오브젝트명 매핑       │
+  └─────────────┬───────────────┘
+                │ (API 키 없으면 ↓ 폴백)
+  ┌─────────────▼───────────────┐
+  │ Template Pattern Matching   │  ← 30+ 정규식 패턴
+  │  - 한글 조사 파싱            │
+  │  - 다중 명령 분해 (";", "그리고") │
+  └─────────────┬───────────────┘
+                │
+       ▼
+  Plan 생성 (JSON: {method, actions[]})
+       │
+       ▼
+  Per-Type Validation (63 액션 타입 개별 스키마)
+       │
+       ▼
+  ┌─────────────────────────────┐
+  │ Plan Preview → 승인 카드     │  ← 절대 자동 실행 안 함
+  │  - confirmation_message      │
+  │  - 액션 목록 + 승인/취소 버튼  │
+  │  - 10분 자동 만료             │
+  └─────────────┬───────────────┘
+                │ 사용자 "승인" 클릭
+       ▼
+  MCP Batch Execution
+    - 생성(create) → 수정(modify) 분리 배치
+    - 진행 상황 WebSocket 브로드캐스트
+       │
+       ▼
+  후처리
+    - 색상 오버라이드 업데이트
+    - 씬 캐시 갱신
+    - 3D 뷰어 새로고침
+    - 되돌리기 플랜 저장
+
+
+5. API ENDPOINTS (45+)
+================================================================================
+
+  [핵심 명령]
+  POST   /api/command                  NL 명령 → plan_ready (미리보기)
+  POST   /api/command/{id}/approve     승인 → 실행
+  POST   /api/command/{id}/reject      거부 → 폐기
+  POST   /api/undo/{id}               되돌리기 (생성→삭제 역전)
+  POST   /api/execute                  검증된 플랜 직접 실행
+  POST   /api/multi-command            다중 명령 순차 실행
+
+  [AI 채팅]
+  POST   /api/chat                     통합 AI 대화 (질문 + 명령)
+  GET    /api/chat/history             대화 이력
+  POST   /api/chat/clear               대화 초기화
+
+  [씬 관리]
+  GET    /api/hierarchy                Unity 씬 계층 구조
+  GET    /api/object/inspect           오브젝트 상세 정보
+  POST   /api/object/action            액션 (삭제/복제/수정/색상)
+  GET    /api/scene/3d-data            Three.js 3D 뷰어 데이터 (재귀 계층)
+  GET    /api/scene/context            캐시된 씬 컨텍스트
+  POST   /api/scene/context/refresh    씬 컨텍스트 강제 갱신
+  POST   /api/scene/save               Unity 씬 저장
+
+  [시스템]
+  GET    /api/status                   MCP 상태 + 시스템 정보
+  POST   /api/connect                  MCP 세션 초기화
+  GET    /api/tools                    MCP 도구 목록
+  POST   /api/screenshot               Unity 스크린샷
+  GET    /api/screenshots/latest       최신 스크린샷 이미지
+  GET    /api/console                  Unity 콘솔 메시지
+  GET    /api/jobs                     작업 이력 (최대 200개)
+  GET    /api/command-history          명령 이력 (자동완성용)
+
+  [파일 탐색기]
+  GET    /api/workdir                  작업 디렉토리 + 즐겨찾기
+  POST   /api/workdir                  작업 디렉토리 설정
+  POST   /api/workdir/pin              디렉토리 즐겨찾기 추가
+  POST   /api/workdir/unpin            즐겨찾기 제거
+  GET    /api/files                    디렉토리 내용 탐색
+  GET    /api/files/drives             드라이브 목록 (Windows)
+
+  [소스 분석]
+  POST   /api/source/analyze           단일 파일 분석
+  POST   /api/source/to-plan           파일 → Unity 플랜 변환
+  POST   /api/source/composite-analyze 다중 파일 복합 분석
+  POST   /api/source/composite-plan    파일 → 복합 플랜
+  GET    /api/source/batch             디렉토리 일괄 분석
+
+  [컴포넌트/프리셋]
+  GET    /api/presets                  템플릿 프리셋 목록
+  GET    /api/suggest                  자동완성 추천
+  GET    /api/components               컴포넌트 라이브러리 카테고리
+  GET    /api/components/{id}          컴포넌트 템플릿 상세
+  POST   /api/components/instantiate   컴포넌트 인스턴스화
+
+  [도면/워크플로우]
+  POST   /api/drawing/analyze          도면 분석 (Claude Vision)
+  GET    /api/workflows                워크플로우 목록
+  POST   /api/workflows                워크플로우 생성
+  POST   /api/workflows/{id}/execute   워크플로우 실행
+  POST   /api/preview                  2D 플랜 미리보기
+
+  [장비 선택 (HeatOps 연동)]
+  POST   /api/equipment/event          설비 선택 이벤트 수신
+  GET    /api/equipment/selected       마지막 선택 설비 조회
+
+  [WebGL]
+  POST   /api/webgl/setup              WebGL 뷰어 설치 플랜
+  POST   /api/webgl/build              WebGL 빌드 플랜
+  GET    /api/webgl/status             WebGL 설치 상태
+  GET    /api/webgl/build-status       빌드 진행 상태
+
+  [디지털 트윈]
+  POST   /api/twin/sync                디지털 트윈 동기화
+  GET    /api/twin/status              트윈 브릿지 상태
+
+  [WebSocket]
+  WS     /ws                           실시간 작업 업데이트
+  WS     /ws/twin                      트윈 센서 스트리밍
+
+
+6. PLAN SCHEMA — 63 ACTION TYPES
+================================================================================
+
+  [오브젝트 (12)]
+  create_primitive     — 기본 도형 생성 (Cube, Cylinder, Sphere 등)
+  create_empty         — 빈 게임오브젝트 생성
+  create_light         — 조명 생성 (Directional, Point, Spot)
+  modify_object        — 위치/회전/스케일 수정
+  delete_object        — 오브젝트 삭제
+  duplicate_object     — 오브젝트 복제
+  set_parent           — 부모-자식 설정
+  move_relative        — 상대 이동
+  find_objects         — 오브젝트 검색
+  set_object_active    — 활성/비활성 전환
+  set_tag              — 태그 설정
+  rename               — 이름 변경
+
+  [머티리얼 (6)]
+  apply_material       — 머티리얼 적용 (색상)
+  create_material      — 머티리얼 생성
+  assign_material      — 머티리얼 할당
+  set_material_color   — 머티리얼 색상 변경
+  set_material_property — 머티리얼 속성 변경
+  get_material_info    — 머티리얼 정보 조회
+
+  [컴포넌트 (3)]
+  add_component        — 컴포넌트 추가
+  remove_component     — 컴포넌트 제거
+  set_component_property — 컴포넌트 속성 변경
+
+  [프리팹 (5)]
+  create_prefab / instantiate_prefab / modify_prefab /
+  get_prefab_info / get_prefab_hierarchy
+
+  [VFX (5)]
+  particle_system / vfx / line_renderer /
+  set_line_positions / trail_renderer
+
+  [텍스처 (5)]
+  create_texture / apply_texture_pattern / apply_texture_gradient /
+  apply_texture_noise / create_sprite
+
+  [씬 (7)]
+  screenshot / save_scene / create_scene / load_scene /
+  get_active_scene / get_build_settings / get_hierarchy
+
+  [에셋 (7)]
+  import_asset / search_assets / get_asset_info /
+  move_asset / rename_asset / delete_asset / duplicate_asset
+
+  [에디터 (8)]
+  editor_control / add_tag / remove_tag / add_layer /
+  remove_layer / set_layer / set_active_tool / execute_menu
+
+  [스크립팅 (4)]
+  create_script / create_shader /
+  create_scriptable_object / modify_scriptable_object
+
+  [유틸리티 (3)]
+  run_tests / refresh_assets / read_console
+
+
+7. FRONTEND UI STRUCTURE
+================================================================================
+
+  ┌──────────── HEADER (상태바, 도구 모음) ────────────────────┐
+  │  MCP 상태 | NLU 상태 | 스크린샷 | 저장 | 되돌리기 | 이동  │
+  ├────────────┬──────────────────────┬──────────────────────┤
+  │ LEFT PANEL │ CENTER PANEL         │ RIGHT PANEL          │
+  │ (280px)    │ (flex 1)             │ (300px)              │
+  │            │                      │                      │
+  │ [탐색기]   │ [3D 씬 뷰어]         │ [계층구조]           │
+  │  주소바     │  Three.js / 스크린샷  │  트리 뷰 + 검색      │
+  │  즐겨찾기   │                      │                      │
+  │  최근경로   │ [실행 진행률 바]       │ [인스펙터]           │
+  │  드라이브   │                      │  위치/회전/스케일     │
+  │  파일 목록  │ [채팅 메시지]         │  적용/복제/삭제      │
+  │            │  시스템/사용자/AI     │                      │
+  │ [도면]     │  승인 카드            │ [컴포넌트]           │
+  │  이미지 뷰  │                      │  장비 템플릿 목록     │
+  │  분석 버튼  │ [채팅 입력]           │                      │
+  │            │  @태그 + 자연어 입력   │ [작업/콘솔]          │
+  │ [프리셋]   │  자동완성 드롭다운     │  실행 이력           │
+  │  템플릿 목록│                      │  Unity 콘솔          │
+  ├────────────┴──────────────────────┴──────────────────────┤
+  │ FOOTER: MCP URL | 세션 ID | 작업 수 | 상태 메시지         │
+  └──────────────────────────────────────────────────────────┘
+
+  [키보드 단축키]
+  Ctrl+Z     — 마지막 작업 되돌리기
+  W          — 이동 모드 토글 (TransformControls 기즈모)
+  Enter      — 채팅 전송
+  ↑/↓        — 명령 이력 탐색
+
+
+8. 3D SCENE VIEWER (Three.js)
+================================================================================
+
+  [초기화]
+  - WebGLRenderer + ACESFilmicToneMapping
+  - PerspectiveCamera + OrbitControls (자유 궤도)
+  - AmbientLight + DirectionalLight (그림자)
+  - GridHelper (바닥 격자)
+
+  [오브젝트 렌더링]
+  - /api/scene/3d-data → 재귀적 MCP hierarchy fetch
+  - Primitive 추론: 이름 → Cube/Cylinder/Sphere/Capsule/Cone
+    - "floor", "ground", "platform", "checker" → Cube
+    - "sphere", "ball", "dome", "dishhead" → Sphere
+    - "cylinder", "body", "pipe", "tank", "vessel", "scrubber",
+      "receiver", "drum", "shaft", "nozzle", "inlet", "outlet",
+      "header", "exhaust" → Cylinder
+    - "capsule" → Capsule
+    - "cone" → Cone
+    - 기본값 → Cube
+
+  [색상 체계]
+  - 서버 _scene_color_overrides (이름 → RGB) — 최우선
+  - 이름 기반 추론 (_infer_color_3d) — 폴백
+  - 프론트엔드 _colorOverrides — 플랜 실행 후 적용
+
+  [인터랙션]
+  - 클릭 선택: Raycaster → 보라색 outline (1.06x 스케일)
+  - 카메라 포커스: controls.target.lerp(선택 위치)
+  - 이동 모드 (W키): TransformControls 기즈모 → 드래그 이동
+    - Three.js Z = -Unity Z (Z축 반전)
+    - 이동 완료 → /api/object/action modify → MCP 동기화
+  - 대상 태그: 클릭 → @tag 채팅 입력 → 범위 한정 명령
+
+
+9. EQUIPMENT SELECTION API (HeatOps 연동)
+================================================================================
+
+  [아웃바운드: Vibe3D → HeatOps (EQUIPMENT_SELECTED)]
+
+  3D 뷰어 오브젝트 클릭 시:
+  1. notifyEquipmentSelected(name) 호출
+  2. _sceneObjects에서 tag/type 조회
+  3. window.parent.postMessage({
+       type: "EQUIPMENT_SELECTED",
+       assetTag: "TCV-7742",           // P&ID 태그 (1순위)
+       assetName: "Fermentor_Main",     // Unity 이름 (2순위)
+       assetId: "Factory/.../Main",     // Unity 경로 (3순위)
+       assetType: "VESSEL",
+       metadata: { position, scale, path, primitive, color },
+       timestamp: Date.now()
+     }, '*');
+  4. POST /api/equipment/event → REST polling 지원
+
+  [인바운드: HeatOps → Vibe3D (SELECT_OBJECT)]
+
+  부모 윈도우에서 iframe으로 전송:
+  1. postMessage({ type: "SELECT_OBJECT", assetTag/assetName/assetId })
+  2. _sceneObjects 캐시에서 검색 (tag → name → path 순)
+  3. 매칭 시:
+     - sceneViewer.selectObject() — 보라색 outline + 카메라 포커스
+     - inspectObject() — 인스펙터 패널 표시
+     - setTargetTag() — @tag 설정
+     - hierarchy 하이라이트
+  4. 결과 응답:
+     postMessage({ type: "SELECT_OBJECT_RESULT", success, assetName, requestedTag })
+
+  [Asset Tag 추출]
+  정규식: [A-Z]{1,4}-\d{2,5}[A-Z]?
+  예: Valve_TCV-7742 → TCV-7742, Pump_P-201A → P-201A
+
+  [Asset Type 분류]
+  ferment/reactor/tank/vessel/digest → VESSEL
+  valve → VALVE / CONTROL_VALVE
+  pump → PUMP
+  pipe/duct → PIPE
+  heat exchanger/cooler/heater → HEAT_EXCHANGER
+  motor/engine/turbine → MACHINE
+  sensor/gauge/meter → INSTRUMENT
+  기타 → EQUIPMENT
+
+
+10. UNDO SYSTEM (되돌리기)
+================================================================================
+
+  [메커니즘]
+  - 플랜 실행 시 역방향 되돌리기 플랜 자동 생성
+    - create_primitive → delete_object (역전)
+    - apply_material → apply_material (원래 색상 스냅샷)
+  - executor._undo_store[job_id] = undo_plan (최대 50개)
+  - /api/undo/{job_id} → _undo_store.pop() (중복 방지)
+
+  [트리거 방법]
+  - Ctrl+Z 단축키
+  - 승인 카드의 "되돌리기" 버튼
+  - 작업 목록의 undo 버튼
+  - _undoInProgress async guard (이중 실행 방지)
+
+  [제한 사항]
+  - 생성 액션만 역전 가능 (create → delete)
+  - 색상 변경: 원래 색상 스냅샷 기반 복원
+  - 위치/스케일 변경: 되돌리기 미지원
+
+
+11. COLOR SYSTEM (색상 관리)
+================================================================================
+
+  [색상 결정 우선순위]
+  1. _scene_color_overrides (서버 메모리) — 플랜 실행 후 갱신
+  2. _infer_color_3d(name) — 이름 기반 추론
+     - floor/ground/slab → (0.35, 0.36, 0.38) 진회색
+     - platform/checker → (0.45, 0.47, 0.50) 회색
+     - dome → (0.78, 0.80, 0.83) 밝은 회색
+     - body/tank/vessel → (0.75, 0.77, 0.80) 스테인리스
+     - pipe/tube → (0.50, 0.52, 0.55) 배관
+     - valve → (0.60, 0.30, 0.30) 적갈색
+     - pump → (0.30, 0.45, 0.60) 청색
+     - wall → (0.85, 0.85, 0.82) 벽
+     - jacket/cooling → (0.30, 0.50, 0.70) 냉각 청색
+
+  [프론트엔드 색상 오버라이드]
+  - _colorOverrides (app.js) — 씬 새로고침 시 재적용
+  - _extractColorOverrides(actions) — 플랜 승인 후 추출
+  - 지원 타입: apply_material, set_renderer_color, set_material_color,
+    create_material+assign_material, create_primitive (with color)
+
+  [NLU 색상 프리셋 (0-1 범위)]
+  빨간 (0.8, 0.15, 0.15) | 파란 (0.2, 0.4, 0.8)
+  초록 (0.15, 0.65, 0.15) | 노란 (0.9, 0.85, 0.15)
+  흰색 (1.0, 1.0, 1.0) | 검정 (0.05, 0.05, 0.05)
+  콘크리트 (0.6, 0.6, 0.6) | 스테인리스 (0.8, 0.82, 0.85)
+
+
+12. WEBSOCKET EVENTS
+================================================================================
+
+  [작업 진행]
+  mcp_status          — MCP 연결 상태 변경
+  job_start           — 작업 시작 (AI 분석 중)
+  plan_generated      — 플랜 생성 완료 (미니맵 업데이트)
+  plan_preview        — 승인 대기 중
+  plan_approved       — 사용자 승인 (실행 중)
+  plan_rejected       — 사용자 거부
+  action_progress     — 액션별 진행 상황 (current/total)
+  stage_update        — 단계 메시지 (AI 분석 중, MCP 실행 중 등)
+  composite_progress  — 복합 분석 진행률
+  job_completed       — 작업 완료 (결과 포함)
+  job_failed          — 작업 실패
+
+  [장비 선택]
+  equipment_selected  — 설비 클릭 이벤트 브로드캐스트
+
+
+13. MCP CLIENT (mcp_client/client.py)
+================================================================================
+
+  [프로토콜]
+  - HTTP + SSE (Server-Sent Events) 전송
+  - JSON-RPC 2.0 규격
+  - 서버: http://localhost:8080/mcp (com.coplaydev.unity-mcp)
+
+  [주요 메서드]
+  initialize()            — 세션 초기화
+  tool_call(name, args)   — MCP 도구 호출
+  list_tools()            — 사용 가능 도구 목록
+  ping()                  — 연결 확인
+  get_hierarchy()         — 씬 계층 구조 조회
+  find_objects()          — 오브젝트 검색
+  delete_object()         — 오브젝트 삭제
+  set_color()             — 렌더러 색상 설정
+
+  [도구 목록]
+  manage_scene       — 씬 관리 (hierarchy, save, load)
+  manage_gameobject  — 오브젝트 CRUD (create, modify, delete)
+  manage_material    — 머티리얼/색상 (set_renderer_color)
+  manage_components  — 컴포넌트 관리
+  manage_editor      — 에디터 제어
+  manage_assets      — 에셋 관리
+  manage_prefabs     — 프리팹 관리
+
+
+14. NLU ENGINE (nlu_engine.py)
+================================================================================
+
+  [Claude Sonnet 통합]
+  - 모델: claude-sonnet-4-5-20250929
+  - 대화 이력: 20 메시지 제한
+  - 씬 컨텍스트: 607 오브젝트 요약 주입
+  - 결과: {type: "plan"|"response", content}
+
+  [시스템 프롬프트 구성]
+  - 63 MCP 액션 타입 정의
+  - 색상 참조 (0-1 정규화 RGB)
+  - 한영 오브젝트명 매핑 (Column, Beam, Tank, ...)
+  - 오타 허용 ("바란색"→파란색, "큐부"→큐브)
+  - 텍스처 패턴 형식 예제
+  - 공간 추론 가이드 (옆에, 위에, 아래에)
+
+  [폴백 (API 키 없을 때)]
+  - plan_generator.py 템플릿 패턴 매칭 (30+ 패턴)
+  - 한글 조사 파싱 ("을/를/의/에")
+  - 다중 명령 분해 (";", "그리고", "and")
+
+
+15. COMPONENT LIBRARY
+================================================================================
+
+  [산업 장비 템플릿]
+  - Vessels: 발효조, 소화조, 분리기, 탱크
+  - Piping: 스팀, 냉각수, 배수
+  - Instruments: pH 프로브, DO 프로브, 온도 센서
+  - Valves: 게이트, 체크, 릴리프
+
+  [색상 상수]
+  STAINLESS (0.8, 0.82, 0.85) — 스테인리스
+  DARK_STEEL (0.25, 0.25, 0.28) — 다크 스틸
+  FLANGE_GRAY (0.6, 0.6, 0.63) — 플랜지
+  JIS 배관 사이즈: 8A-100A → 반경 매핑
+
+
+16. WEBGL BUILD SYSTEM
+================================================================================
+
+  [설치 (Setup)]
+  - CameraRig + Pivot 생성
+  - OrbitPanZoomController.cs 스크립트 생성
+    - 궤도/팬/줌/부드러운 줌 지원
+    - WebGL 안전: jslib 스크롤 브릿지, 터치 핀치
+    - FOV 기반 줌 (10-90도)
+
+  [빌드]
+  - generate_build_plan(output_path) → MCP 플랜
+  - 컴포넌트 자동 감지 (harmless set_property)
+  - 빌드 상태 폴링: /api/webgl/build-status (5초 간격)
+
+
+17. EXE DISTRIBUTION (PyInstaller)
+================================================================================
+
+  [빌드 프로세스]
+  build_exe.bat:
+  1. pip install -r requirements.txt
+  2. pyinstaller vibe3d.spec (onedir 모드)
+  3. .env.example → dist\Vibe3D\.env 복사
+  4. dist\Vibe3D-win64.zip 생성
+
+  [런타임 (run.py)]
+  - PyInstaller frozen 감지
+  - sys.path.insert(0, sys._MEIPASS) — 모듈 해상도
+  - .env 2단계 로드: 번들 내부 → exe 인접 사용자 설정
+  - 브라우저 자동 열기
+  - 에러 시 일시 정지 (사용자 확인)
+
+  [출력]
+  dist/Vibe3D/Vibe3D.exe + dist/Vibe3D-win64.zip
+
+
+18. DIGITAL TWIN (fermentation_bridge.py)
+================================================================================
+
+  [발효 시뮬레이션 ↔ Unity 연동]
+  - pH 색상: 위험 낮음(빨강) → 정상(녹색) → 위험 높음(빨강)
+  - DO 색상: 위험 낮음(빨강) → 정상(파랑) → 높음(시안)
+  - 온도 색상: 저온(파랑) → 정상(녹색) → 고온(빨강)
+  - 용기 매핑: KF-7KL → Fermentor_7KL 등
+
+  [WebSocket 스트리밍]
+  - /ws/twin 엔드포인트
+  - 센서 데이터 실시간 전달
+  - Unity 오브젝트 색상 자동 변경
+
+
+19. ERROR HANDLING (error_analyzer.py)
+================================================================================
+
+  [에러 분류]
+  E1_PARSE_FAIL        — 플랜 파싱 오류 (유사 액션 타입 추천)
+  E2_OBJECT_NOT_FOUND  — 대상 오브젝트 미존재 (유사 이름 추천)
+  E3_MCP_DISCONNECTED  — MCP 서버 연결 끊김
+  E4_POSITION_CONFLICT — 공간 충돌 감지
+  E5_SCHEMA_ERROR      — 액션 검증 실패
+  E6_BATCH_LIMIT       — 배치 25개 액션 초과
+
+
+20. DEPENDENCIES
+================================================================================
+
+  [Python 패키지]
+  fastapi >= 0.104.0       # 웹 프레임워크
+  uvicorn[standard]        # ASGI 서버
+  jsonschema >= 4.20.0     # 플랜 검증
+  websockets >= 12.0       # WebSocket 지원
+  anthropic >= 0.40.0      # Claude API
+  python-dotenv >= 1.0.0   # .env 로드
+  httpx >= 0.25.0          # HTTP 클라이언트
+  pyinstaller >= 6.0.0     # EXE 번들
+
+  [프론트엔드 (CDN)]
+  Three.js                 # 3D 렌더링
+  OrbitControls            # 카메라 궤도
+  TransformControls        # 이동 기즈모
+
+  [외부 시스템]
+  Unity 6 LTS + MCP-FOR-UNITY (com.coplaydev.unity-mcp)
+  Cloudflare Tunnel (quick tunnel, 외부 접근용)
+  Claude Sonnet API (선택사항)
+
+
+21. HOW TO RUN
+================================================================================
+
+  [사전 요구사항]
+  - Python 3.10+
+  - Unity Editor 열린 상태 + MCP-FOR-UNITY 플러그인 (포트 8080)
+  - (선택) ANTHROPIC_API_KEY → .env 파일
+
+  [서버 시작]
+  python -m uvicorn vibe3d.backend.main:app --host 127.0.0.1 --port 8091
+
+  [외부 접근 (Cloudflare Tunnel)]
+  cloudflared tunnel --url http://127.0.0.1:8091
+
+  [브라우저]
+  http://127.0.0.1:8091
+
+  [EXE 실행]
+  dist\Vibe3D\Vibe3D.exe (빌드 후)
+
+
+22. KNOWN LIMITATIONS & PITFALLS
+================================================================================
+
+  - MCP manage_material: set_renderer_color + mode="instance" 사용
+  - MCP 색상 형식: {"r": 0.8, "g": 0.82, "b": 0.85, "a": 1.0} (0-1 범위)
+  - MCP 이름 충돌: search_method="by_path" + 전체 경로 사용
+  - MCP 배치 타이밍: 생성과 수정을 별도 배치로 분리
+  - MCP 계층 구조: 페이지네이션 → parent=instanceID 재귀 사용
+  - MCP 트랜스폼: [x,y,z] 배열 ({"x":..} 딕트 아님)
+  - FastAPI async + sync I/O: asyncio.to_thread() 사용
+  - 한국어 정규식: \b 미작동 → 명시적 조사 목록 사용
+  - 텍스처 액션: LLM에 명시적 형식 예제 필요
+  - uvicorn --reload: Windows에서 프로세스 킬 + __pycache__ 삭제 필요
+  - 되돌리기 제한: 생성 액션만 역전 가능 (색상/트랜스폼 제한적)
+  - 승인 흐름: _pending_plans 10분 자동 만료
+  - 3D 뷰어 카메라: loadScene(data, preserveCamera=true)
+  - 미니맵: hideMinimap() 호출 필수 (오버레이 차단 방지)
+  - PyInstaller: sys._MEIPASS 경로 삽입 필요
+  - Three.js Z축: Unity Z = -Three.js Z (Z축 반전)
+  - 정적 파일 캐시: index.html에서 ?v=N 버전 범프 필요
+  - Equipment postMessage: iframe 내에서만 동작
+
+
+================================================================================
+  END OF DOCUMENT
+  Generated: 2026-02-23
+  Vibe3D Unity Accelerator v2.4
+================================================================================

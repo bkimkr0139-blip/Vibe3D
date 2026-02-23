@@ -1,7 +1,7 @@
 # Equipment Selection API — Vibe3D ↔ HeatOps Nav X 연동
 
-> **Version**: v2.3
-> **Date**: 2026-02-21
+> **Version**: v2.4
+> **Date**: 2026-02-22
 > **Status**: Production Ready
 
 ---
@@ -191,7 +191,7 @@ ws.onmessage = (e) => {
 | 파일 | 변경 내용 | 변경량 |
 |------|-----------|--------|
 | `vibe3d/backend/main.py` | `EquipmentEventRequest` 모델, `_extract_asset_tag()`, `_infer_asset_type()`, 2 엔드포인트, 3D data에 tag/type 필드 추가 | +60줄 |
-| `vibe3d/frontend/static/app.js` | `notifyEquipmentSelected()`, `inferAssetType()`, `extractTag()`, `_sceneObjects` 캐시, onSelect 수정 | +55줄 |
+| `vibe3d/frontend/static/app.js` | `notifyEquipmentSelected()`, `inferAssetType()`, `extractTag()`, `_sceneObjects` 캐시, onSelect 수정, `SELECT_OBJECT` 인바운드 리스너 | +90줄 |
 | `vibe3d/frontend/static/scene-viewer.js` | `mesh.userData.tag/type` 저장 | +2줄 |
 | `vibe3d/frontend/index.html` | Cache-busting `?v=9`, WebGL 빌드 버튼 | +8줄 |
 | `vibe3d/backend/executor.py` | WebGL 빌드 지원 (non-batchable tools, compile wait, script creation) | +253줄 |
@@ -229,7 +229,118 @@ window.parent.postMessage({
 
 ---
 
-## 7. 트러블슈팅
+## 7. 인바운드 메시지: SELECT_OBJECT (parent → Vibe3D)
+
+부모 윈도우(HeatOps Nav X)에서 Vibe3D iframe으로 `SELECT_OBJECT` 메시지를 전송하면, 해당 오브젝트를 자동 선택/하이라이트합니다.
+
+### 메시지 포맷
+
+```json
+{
+    "type": "SELECT_OBJECT",
+    "assetTag": "TCV-7742",
+    "assetName": "Fermentor_Main",
+    "assetId": "Factory/Vessels/Fermentor_Main"
+}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `type` | string | Y | 반드시 `"SELECT_OBJECT"` |
+| `assetTag` | string | N | P&ID 태그 (예: `TCV-7742`, `V-101`) |
+| `assetName` | string | N | Unity 오브젝트 이름 |
+| `assetId` | string | N | Unity 오브젝트 경로 |
+
+> 최소 하나의 식별자(`assetTag`, `assetName`, `assetId`)가 필요합니다.
+
+### 검색 우선순위
+
+1. **assetTag** — `_sceneObjects[name].tag` 또는 `extractTag(name)` 매칭
+2. **assetName** — `_sceneObjects` 키 이름 정확히 일치
+3. **assetId** — `_sceneObjects[name].path` 또는 이름 일치
+
+### 선택 시 동작
+
+| 동작 | 설명 |
+|------|------|
+| 3D 하이라이트 | `sceneViewer.selectObject()` — 보라색 outline + 카메라 포커스 |
+| 인스펙터 패널 | `inspectObject()` — 우측 패널에 위치/회전/스케일 표시 |
+| 대상 태그 설정 | `setTargetTag()` — 채팅 입력창에 @tag 표시 |
+| 계층 구조 하이라이트 | hierarchy 트리에서 해당 노드 선택 |
+
+### 응답 메시지: SELECT_OBJECT_RESULT
+
+Vibe3D는 처리 결과를 부모 윈도우에 응답합니다.
+
+```json
+{
+    "type": "SELECT_OBJECT_RESULT",
+    "success": true,
+    "assetName": "Fermentor_Main",
+    "requestedTag": "TCV-7742"
+}
+```
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `type` | string | `"SELECT_OBJECT_RESULT"` |
+| `success` | boolean | 오브젝트를 찾았으면 `true` |
+| `assetName` | string\|null | 찾은 오브젝트 이름 (못 찾으면 `null`) |
+| `requestedTag` | string\|null | 요청된 assetTag 값 |
+
+### HeatOps Nav X 연동 예시
+
+```javascript
+// 1. Vibe3D iframe에 SELECT_OBJECT 전송
+function selectEquipmentIn3D(assetTag) {
+    const iframe = document.querySelector('iframe#vibe3d');
+    iframe.contentWindow.postMessage({
+        type: 'SELECT_OBJECT',
+        assetTag: assetTag,
+    }, '*');
+}
+
+// 2. 결과 수신
+window.addEventListener('message', (e) => {
+    if (e.data?.type === 'SELECT_OBJECT_RESULT') {
+        if (e.data.success) {
+            console.log(`3D 선택 완료: ${e.data.assetName}`);
+        } else {
+            console.warn(`3D에서 "${e.data.requestedTag}" 오브젝트를 찾지 못했습니다.`);
+        }
+    }
+});
+
+// 3. 예시: "3D 보기" 버튼 클릭 핸들러
+document.getElementById('view3dBtn').addEventListener('click', () => {
+    const tag = getCurrentAssetTag(); // 현재 선택된 설비의 태그
+    selectEquipmentIn3D(tag);
+});
+```
+
+### 테스트
+
+```javascript
+// iframe 내부 콘솔에서 직접 테스트
+window.postMessage({ type: 'SELECT_OBJECT', assetTag: 'V-101' }, '*');
+
+// 부모 창에서 iframe으로 테스트
+document.querySelector('iframe').contentWindow.postMessage(
+    { type: 'SELECT_OBJECT', assetName: 'Fermentor_Main' }, '*'
+);
+```
+
+### 디버그 로그
+
+| 로그 메시지 | 의미 |
+|-------------|------|
+| `[Vibe3D ← Navigator] SELECT_OBJECT {...}` | 인바운드 메시지 수신 |
+| `SELECT_OBJECT_RESULT {success: true, ...}` | 오브젝트 찾아서 선택 완료 |
+| `SELECT_OBJECT_RESULT {success: false, ...}` | 오브젝트를 찾지 못함 |
+
+---
+
+## 8. 트러블슈팅
 
 | 증상 | 원인 | 해결 |
 |------|------|------|

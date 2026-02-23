@@ -1,0 +1,188 @@
+Unity WebGL (공장/현장 전체 씬) 컨트롤 기능(1+2) 구현 작업지시서 (MCP/바이브코딩용) - TXT
+================================================================================
+요청 범위
+---------
+(1) 카메라 확대/축소/회전/팬이 WebGL에서 동작하도록 구현 후 빌드에 포함(저장)
+(2) 설비(오브젝트) 클릭/선택 → 하이라이트/정보표시 → 더블클릭(또는 버튼)으로 자동 포커스(Focus)
+
+전제
+----
+- Unity 프로젝트는 공장/현장 전체 씬(대규모)이며 WebGL로 배포한다.
+- MCP로 Unity 에디터에 작업 지시(오브젝트 생성/스크립트 생성/컴포넌트 부착/프리팹 저장/빌드) 수행 가능.
+- “설비 오브젝트”는 Layer 또는 Tag로 필터링 가능해야 한다(권장: Layer = Equipment).
+
+핵심 UX 목표(PC WebGL 기준)
+--------------------------
+- 좌클릭 드래그: Orbit 회전(선택된 타깃 중심)
+- 휠: Zoom(거리 조절)
+- 우클릭 드래그 또는 Shift+좌클릭 드래그: Pan
+- 클릭: 설비 선택 + 하이라이트 + 정보패널 표시
+- 더블클릭(설비): 자동 Focus(설비 bounds 기준으로 적절 거리/각도로 이동)
+- R: Reset(전체 씬 기본 뷰로 복귀)
+- ESC: 선택 해제
+
+================================================================================
+A) 씬/오브젝트 구조 작업 (MCP 단계 1)
+================================================================================
+
+A-1. CameraRig 생성
+- 씬 루트에 빈 오브젝트 생성: CameraRig
+- CameraRig 하위에 빈 오브젝트 생성: Pivot
+- Main Camera를 Pivot의 자식으로 이동: CameraRig/Pivot/Main Camera
+- 초기 위치/각도는 “전체 씬이 보이는 기본 뷰”로 설정(프로젝트 기준값)
+  - 예: Pivot 위치 = (0, 0, 0) / Camera localPosition = (0, 20, -40) / Camera localRotation = (15, 0, 0)
+  - 실제 현장 규모에 맞춰 조정 가능
+
+A-2. UI 생성(Overlay)
+- Canvas 생성: ViewerCanvas (Screen Space - Overlay)
+- EventSystem 생성(없으면 추가)
+- 우측 하단 패널 생성: ControlsPanel
+  - 버튼: (옵션) Mode(Orbit/Fly/Walk), Focus, Reset
+  - 텍스트: SelectedName, SelectedTag(옵션), FPS(옵션)
+
+A-3. 레이어 규칙 적용(설비 선택 대상 지정)
+- Project Settings > Tags and Layers 에 Layer 추가: Equipment
+- “선택 가능해야 하는 설비” GameObject(최상위 프리팹 루트)에 Layer=Equipment 적용
+  - 자식까지 일괄 적용 권장
+
+================================================================================
+B) 스크립트 생성 및 부착 (MCP 단계 2)
+================================================================================
+
+B-1. Scripts 폴더 생성
+- Assets/Scripts/Viewer/ 폴더 생성
+
+B-2. OrbitPanZoomController.cs 생성 및 부착
+- 파일 생성: Assets/Scripts/Viewer/OrbitPanZoomController.cs
+- 부착 대상: CameraRig (또는 Pivot)
+- 책임:
+  - Orbit 회전(마우스 좌드래그)
+  - Pan(우드래그 또는 Shift+좌드래그)
+  - Zoom(휠)
+  - 회전 제한(pitch clamp), zoom 최소/최대, pan 속도
+  - 선택된 타깃(Transform target)을 중심으로 Orbit
+  - Reset 기능 제공(초기 포즈 저장/복귀)
+
+권장 파라미터(Inspector 노출)
+- Transform target (기본 Pivot)
+- float rotateSpeed = 180
+- float panSpeed = 0.5
+- float zoomSpeed = 10
+- float minDistance = 2
+- float maxDistance = 500 (현장 규모)
+- float minPitch = -20, maxPitch = 80
+- bool invertY = false
+
+B-3. ObjectPickerAndFocus.cs 생성 및 부착
+- 파일 생성: Assets/Scripts/Viewer/ObjectPickerAndFocus.cs
+- 부착 대상: Main Camera (또는 CameraRig)
+- 책임:
+  - 클릭 Raycast로 Equipment 레이어만 선택
+  - 선택 시:
+    - SelectedObject 저장
+    - 하이라이트 적용(머티리얼 교체 또는 Outline) + 원복 저장
+    - UI 텍스트 업데이트(설비명/태그)
+    - OrbitPanZoomController.target을 “선택 설비의 FocusTarget”으로 전환
+  - 더블클릭 시 Focus 실행:
+    - 선택 설비 Renderer bounds 계산
+    - bounds 크기에 따라 카메라 거리 자동 산출
+    - 0.5~1.0초 Smooth 이동(lerp/smoothDamp)로 Pivot/Camera 재배치
+  - ESC: 선택 해제(하이라이트 원복 + target Pivot로 복귀)
+
+권장 파라미터(Inspector)
+- LayerMask equipmentMask (Equipment)
+- Material highlightMaterial (Assets/Materials/Highlight.mat)
+- float focusDuration = 0.8
+- float doubleClickThreshold = 0.25
+- float focusPadding = 1.2
+
+B-4. ViewerUIController.cs 생성 및 부착
+- 파일 생성: Assets/Scripts/Viewer/ViewerUIController.cs
+- 부착 대상: ViewerCanvas/ControlsPanel
+- 책임:
+  - Focus 버튼 → ObjectPickerAndFocus.FocusSelected()
+  - Reset 버튼 → OrbitPanZoomController.ResetView()
+  - (옵션) 모드 토글(Orbit/Fly/Walk) 구현 시 전환 처리
+
+B-5. Highlight 자원 생성(가장 안전한 방식)
+- Assets/Materials/Highlight.mat 생성
+  - Built-in: Standard(Emission 활용) 또는 단색
+  - URP: URP/Lit + Emission 또는 단색
+- 하이라이트 방식은 “머티리얼 교체”를 기본으로 하되,
+  프로젝트가 URP이고 Outline 패키지가 있으면 Outline도 옵션 제공
+
+================================================================================
+C) WebGL 입력 안정화 (MCP 단계 3, 권장)
+================================================================================
+문제: WebGL에서 마우스 휠이 “페이지 스크롤”로 빠져 Zoom이 안 먹는 경우가 있음.
+
+C-1. WebGL Template 적용(가능하면)
+- Project Settings > Player > WebGL > Resolution and Presentation > WebGL Template을 커스텀으로 지정
+- 커스텀 템플릿 폴더: Assets/WebGLTemplates/VibeViewer/
+
+C-2. index.html에 wheel preventDefault 적용
+- canvas(또는 unityContainer) 영역에서 wheel 이벤트를 막아 Unity로 전달되도록 처리
+- 적용 기준:
+  - 캔버스 위에서만 preventDefault
+  - 페이지 전체 스크롤을 완전히 막지는 않음(캔버스 밖에서는 스크롤 가능)
+
+================================================================================
+D) 품질 게이트(완성품질 기준) (MCP 단계 4)
+================================================================================
+
+D-1. 기능 검수 체크리스트
+- [ ] 좌클릭 드래그로 회전(Orbit) 가능
+- [ ] 휠로 줌 가능(페이지 스크롤로 빠지지 않음)
+- [ ] 우클릭 드래그 또는 Shift+드래그로 팬 가능
+- [ ] 설비 클릭 시 하이라이트 적용 + UI에 설비명 표시
+- [ ] 더블클릭 시 해당 설비 중심으로 Focus(자연스러운 이동)
+- [ ] Reset 버튼 또는 R 키로 초기 뷰 복귀
+- [ ] ESC로 선택 해제 및 하이라이트 원복
+
+D-2. 대규모 씬 안정성
+- Zoom maxDistance가 현장 스케일에 충분(예: 300~1000)
+- Near/Far Clip 최적화(너무 멀면 Z-fighting 증가)
+- LODGroup / Occlusion(가능 시) 적용 권장
+
+================================================================================
+E) WebGL 빌드(저장) 절차 (MCP 단계 5)
+================================================================================
+
+E-1. Build Settings
+- File > Build Settings…
+- Platform: WebGL → Switch Platform
+- Add Open Scenes
+
+E-2. Player Settings(권장)
+- Publishing Settings:
+  - 로컬 테스트용: Compression Format = Disabled 또는 Gzip
+  - 공개 배포용: Gzip/Brotli는 서버 헤더 세팅과 함께 운영
+- WebGL Memory Size: 프로젝트 규모에 맞게 조정
+- (Threads 사용 시) 서버 COOP/COEP 헤더 필요
+
+E-3. Build
+- Build output 폴더 지정(예: C:\Users\a\works\WebGL_Build\)
+- Build 또는 Build and Run
+
+================================================================================
+F) MCP 실행용 “작업 순서” 요약(에이전트 지시)
+================================================================================
+1) 씬에 CameraRig/Pivot 생성 + Main Camera 재배치
+2) ViewerCanvas/ControlsPanel UI 생성 + 버튼/텍스트 배치
+3) Equipment 레이어 생성 및 설비 루트에 적용
+4) 스크립트 3종 생성(OrbitPanZoomController, ObjectPickerAndFocus, ViewerUIController)
+5) Highlight 머티리얼 생성(Highlight.mat)
+6) 각 스크립트를 적절한 오브젝트에 부착하고 Inspector 파라미터 연결
+7) WebGL Template(옵션) 적용 + wheel preventDefault
+8) 플레이모드에서 기능 검수 후 WebGL 빌드
+
+================================================================================
+G) 필수 산출물(레포/납품 관점)
+================================================================================
+- Assets/Scripts/Viewer/*.cs (3개 이상)
+- Assets/Materials/Highlight.mat
+- (옵션) Assets/WebGLTemplates/VibeViewer/
+- WebGL Build 폴더(index.html, Build/, TemplateData/)
+- 짧은 사용자 가이드(컨트롤 키/마우스 표) 1페이지(TXT)
+
+(끝)

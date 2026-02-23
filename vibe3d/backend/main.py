@@ -1669,13 +1669,18 @@ async def get_latest_screenshot():
 def _infer_primitive_3d(name: str) -> str:
     """Infer primitive type from object name for 3D viewer."""
     n = name.lower()
-    if any(k in n for k in ("floor", "ground", "platform", "slab")):
+    if any(k in n for k in ("floor", "ground", "platform", "slab", "checker")):
         return "Cube"
     if "plane" in n:
         return "Plane"
-    if any(k in n for k in ("sphere", "ball", "dome")):
+    # Dome/dish heads — must check BEFORE cylinder (dishhead contains "head" not "dome")
+    if any(k in n for k in ("sphere", "ball", "dome", "dishhead", "dish_head")):
         return "Sphere"
-    if any(k in n for k in ("cylinder", "body", "pipe", "column", "tube", "col_", "jacket", "tank", "vessel")):
+    if any(k in n for k in (
+        "cylinder", "body", "pipe", "column", "tube", "col_", "jacket",
+        "tank", "vessel", "scrubber", "receiver", "drum", "shaft",
+        "nozzle", "inlet", "outlet", "header", "exhaust",
+    )):
         return "Cylinder"
     if "capsule" in n:
         return "Capsule"

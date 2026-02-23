@@ -351,10 +351,10 @@ class SceneViewer {
     _inferPrimitive(name) {
         if (!name) return 'Cube';
         const n = name.toLowerCase();
-        if (n.includes('floor') || n.includes('ground')) return 'Cube';
+        if (n.includes('floor') || n.includes('ground') || n.includes('platform') || n.includes('checker')) return 'Cube';
         if (n.includes('plane')) return 'Plane';
-        if (n.includes('sphere') || n.includes('ball') || n.includes('dome')) return 'Sphere';
-        if (n.includes('cylinder') || n.includes('body') || n.includes('pipe') || n.includes('column') || n.includes('tube')) return 'Cylinder';
+        if (n.includes('sphere') || n.includes('ball') || n.includes('dome') || n.includes('dishhead') || n.includes('dish_head')) return 'Sphere';
+        if (n.includes('cylinder') || n.includes('body') || n.includes('pipe') || n.includes('column') || n.includes('tube') || n.includes('col_') || n.includes('jacket') || n.includes('tank') || n.includes('vessel') || n.includes('scrubber') || n.includes('receiver') || n.includes('drum') || n.includes('shaft') || n.includes('nozzle') || n.includes('inlet') || n.includes('outlet') || n.includes('header') || n.includes('exhaust')) return 'Cylinder';
         if (n.includes('capsule')) return 'Capsule';
         if (n.includes('cone')) return 'Cone';
         if (n.includes('light') || n.includes('lamp')) return 'Light';

@@ -1976,3 +1976,53 @@ function notifyEquipmentSelected(name) {
         body: JSON.stringify(event),
     }).catch((err) => console.warn('[Vibe3D] equipment event POST failed:', err));
 }
+
+// ── Inbound Equipment Selection (parent window → iframe) ────
+
+console.log('[Vibe3D] SELECT_OBJECT listener registered (app.js v10)');
+
+window.addEventListener('message', (event) => {
+    if (!event.data || typeof event.data !== 'object') return;
+    // Log ALL incoming postMessages for debugging
+    if (event.data.type) {
+        console.log('[Vibe3D] postMessage received:', event.data.type, event.data);
+    }
+    if (event.data.type !== 'SELECT_OBJECT') return;
+
+    const { assetTag, assetName, assetId } = event.data;
+    console.log('[Vibe3D ← Navigator] SELECT_OBJECT', { assetTag, assetName, assetId, sceneObjectCount: Object.keys(_sceneObjects).length });
+
+    // Search priority: 1) assetTag → 2) assetName → 3) assetId (path)
+    let found = null;
+    for (const [name, obj] of Object.entries(_sceneObjects)) {
+        if (assetTag && (obj.tag === assetTag || extractTag(name) === assetTag)) { found = name; break; }
+        if (assetName && name === assetName) { found = name; break; }
+        if (assetId && (obj.path === assetId || name === assetId)) { found = name; break; }
+    }
+
+    if (found) {
+        // 3D viewer: purple outline + camera focus
+        if (window.sceneViewer && window.sceneViewer.initialized) {
+            window.sceneViewer.selectObject(found);
+        }
+        inspectObject(found);      // right panel info
+        setTargetTag(found);       // @tag in chat input
+        selectedObject = found;
+
+        // Highlight in hierarchy tree
+        document.querySelectorAll('.node-row.selected').forEach(el => el.classList.remove('selected'));
+        document.querySelectorAll('.node-name').forEach(el => {
+            if (el.textContent === found) el.closest('.node-row')?.classList.add('selected');
+        });
+    }
+
+    // Respond to parent with result
+    if (window.parent !== window) {
+        window.parent.postMessage({
+            type: 'SELECT_OBJECT_RESULT',
+            success: !!found,
+            assetName: found || null,
+            requestedTag: assetTag || null,
+        }, '*');
+    }
+});
