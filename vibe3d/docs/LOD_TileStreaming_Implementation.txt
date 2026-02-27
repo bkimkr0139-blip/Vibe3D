@@ -1,0 +1,371 @@
+================================================================================
+  Vibe3D v2.5 — LOD Auto-Generation + Tile Streaming System
+  Implementation Document
+  Date: 2026-02-27
+================================================================================
+
+1. Overview
+--------------------------------------------------------------------------------
+
+14개 OBJ 포토그래메트리 타일(1.4GB, 267만 버텍스)이 Unity에 임포트되어 있으나,
+LOD/스트리밍 없이 전체 메시가 항상 렌더링되어 에디터 성능 저하 및 웹 뷰어
+초기 로딩 30-60초 소요 문제를 해결하기 위해 구현.
+
+핵심 전략:
+  - Unity Editor: Vertex Clustering 알고리즘으로 LOD 메시 자동 생성 + LODGroup 설정
+  - Unity Runtime: 거리 기반 타일 활성화/비활성화 스트리머
+  - Web Viewer: LOD2 우선 로딩 (프로그레시브) + 근접 시 LOD0 백그라운드 업그레이드
+
+
+2. Performance Improvement (Expected)
+--------------------------------------------------------------------------------
+
+  | Metric                  | Before              | After                      |
+  |-------------------------|---------------------|----------------------------|
+  | Rendering vertices      | 2.67M (always)      | ~400K (LOD2) / 0 (culled)  |
+  | MeshCollider memory     | Full mesh (2.67M)   | LOD2 mesh (~400K)          |
+  | Web initial load        | ~1.4GB / 30-60s     | ~210MB (LOD2) / 5-10s      |
+  | Active objects (runtime)| 14 (always)         | 3-6 (camera nearby)        |
+
+
+3. Implemented Files (10 files)
+--------------------------------------------------------------------------------
+
+=== Part A: Unity C# Scripts (3 files) ===
+
+3.1  CityTileLODGenerator.cs  [NEW]
+     Path: Assets/Scripts/Editor/CityTileLODGenerator.cs
+     Backup: vibe3d/unity-scripts/Editor/CityTileLODGenerator.cs
+     Type: Editor Window Script
+     Lines: ~320
+
+     Description:
+       - Unity Editor 메뉴: Vibe3D > Generate City Tile LODs
+       - Vertex Clustering Decimation 알고리즘 구현
+         1) 메시 바운딩박스를 3D 그리드로 분할
+         2) 같은 셀의 버텍스를 중심점으로 병합 (UV: 가중 평균)
+         3) 축퇴 삼각형(같은 셀로 합쳐진 edge) 제거
+         4) 서브메시별 처리로 멀티 머티리얼 보존
+
+     LOD Levels:
+       - LOD0: 100% (원본 메시),  Screen Height 50%
+       - LOD1:  40% (중거리),     Screen Height 25%
+       - LOD2:  15% (원거리),     Screen Height  5%
+       - LOD3: Culled,            Screen Height  1%
+
+     Features:
+       - .asset 파일로 LOD 메시 저장 (Assets/CityTiles/{tile}/LOD/)
+       - .obj 파일 내보내기 (웹 뷰어용)
+       - MeshCollider를 LOD2 메시로 교체 (~85% 경량화)
+       - LODGroup 컴포넌트 자동 설정 (씬 인스턴스에)
+       - Progress bar + Cancel 지원
+       - 기존 LOD 데이터 덮어쓰기 지원
+
+     Key Methods:
+       - GenerateAllLODs()           — 전체 CityTiles 폴더 순회
+       - ProcessTileFolder()         — 개별 타일 처리
+       - DecimateVertexClustering()  — 핵심 알고리즘
+       - ExportMeshToOBJ()           — OBJ 포맷 내보내기
+       - SetupLODGroupInScene()      — LODGroup 컴포넌트 구성
+
+
+3.2  Vibe3DCityTilePostprocessor.cs  [MODIFIED]
+     Path: Assets/Scripts/Editor/Vibe3DCityTilePostprocessor.cs
+     Backup: vibe3d/unity-scripts/Editor/Vibe3DCityTilePostprocessor.cs
+
+     Change:
+       Line 34: importer.isReadable = false  →  importer.isReadable = true
+
+     Reason:
+       LOD 생성기가 Mesh.vertices, .triangles, .uv에 접근하려면
+       isReadable = true가 필수. 이 없으면 런타임에서 메시 데이터를
+       읽을 수 없어 DecimateVertexClustering()이 실패함.
+
+
+3.3  CityTileStreamer.cs  [NEW]
+     Path: Assets/Scripts/Runtime/CityTileStreamer.cs
+     Backup: vibe3d/unity-scripts/Runtime/CityTileStreamer.cs
+     Type: Runtime MonoBehaviour
+     Lines: ~160
+
+     Description:
+       CityTiles_Root 게임오브젝트에 부착하는 런타임 스트리머.
+       카메라와의 거리를 기반으로 타일을 활성화/비활성화.
+
+     Parameters (Inspector):
+       - enableDistance:    450m (이 안에 들어오면 활성화)
+       - disableDistance:   550m (이 밖으로 나가면 비활성화)
+       - maxChangesPerFrame: 2  (프레임당 최대 상태 변경 수)
+       - checkInterval:    0.1s (거리 체크 주기)
+       - targetCamera:     null → Camera.main 자동 사용
+       - showGizmos:       true
+
+     Hysteresis:
+       Enable 450m / Disable 550m → 경계에서 깜빡임 방지
+
+     Frame Budget:
+       프레임당 최대 2개 타일만 상태 변경하여 프레임 스파이크 방지.
+       Round-robin 방식으로 모든 타일을 균등하게 처리.
+
+     Gizmos (Scene View):
+       - 초록색 원: Enable 거리 (450m)
+       - 노란색 원: 중간 거리
+       - 빨간색 원: Disable 거리 (550m)
+       - 타일별: 초록 큐브(활성) / 빨강 큐브(비활성)
+
+     Public Properties:
+       - ActiveTileCount    — 현재 활성 타일 수
+       - InactiveTileCount  — 현재 비활성 타일 수
+
+
+=== Part B: Backend Python (2 files) ===
+
+3.4  lod_server.py  [NEW]
+     Path: vibe3d/backend/drone_pipeline/lod_server.py
+     Lines: ~120
+
+     Description:
+       CityTiles의 LOD 파일을 탐색하고 메타데이터를 제공하는 모듈.
+
+     Functions:
+       - discover_lod_metadata() → dict
+         CityTiles/{tile}/LOD/ 디렉토리를 스캔하여 각 타일의
+         LOD0/LOD1/LOD2 URL과 파일 크기를 반환.
+
+         Return format:
+         {
+           "tiles": [
+             {
+               "name": "Tile-37-26-1-1",
+               "row": 37, "col": 26,
+               "lod_levels": {
+                 "lod0": {"url": "/api/drone/citytiles/.../file.obj", "size_mb": 105.2},
+                 "lod1": {"url": "/api/drone/citytiles/.../LOD/file_LOD1.obj", "size_mb": 42.1},
+                 "lod2": {"url": "/api/drone/citytiles/.../LOD/file_LOD2.obj", "size_mb": 15.8}
+               },
+               "mtl_url": "/api/drone/citytiles/.../file.mtl",
+               "textures": ["texture.jpg"]
+             }
+           ],
+           "has_lods": true,
+           "tile_count": 14,
+           "total_lod0_mb": 1400.0,
+           "total_lod2_mb": 210.5
+         }
+
+       - get_lod_file_path(tile_name, filename) → Path | None
+         LOD 파일의 전체 파일시스템 경로를 반환.
+
+
+3.5  router.py  [MODIFIED]
+     Path: vibe3d/backend/drone_pipeline/router.py
+
+     Added Endpoints:
+
+       GET /api/drone/citytiles-lod
+         LOD 메타데이터 반환 (모든 타일의 LOD 레벨 URL + 파일 크기).
+         Frontend에서 프로그레시브 로딩에 사용.
+
+       GET /api/drone/citytiles/{tile_name}/LOD/{filename}
+         LOD OBJ 파일 서빙.
+         Cache-Control: public, max-age=86400 (24시간 캐시).
+         CORS 헤더 포함.
+
+
+=== Part C: Frontend JavaScript (2 files) ===
+
+3.6  scene-viewer.js  [MODIFIED]
+     Path: vibe3d/frontend/static/scene-viewer.js
+     Version: ?v=16
+
+     Added Properties:
+       - _lodTiles: Map   — name → {lod, levels, meta, materials}
+       - _lodMemoryTimer   — LOD0 메모리 관리 타이머
+
+     Added Methods:
+
+       loadOBJTilesWithLOD(tiles)
+         LOD 지원 프로그레시브 타일 로딩.
+         Phase 1: 모든 타일의 LOD2(경량)를 먼저 로드 → 빠른 초기 뷰 (5-10초)
+         Phase 2: 카메라 근처 타일만 LOD0(풀 디테일) 백그라운드 업그레이드
+
+       _prepareTileScene(tileCount)
+         타일 씬 공통 설정 (조명, 카메라, 그리드 숨김 등).
+         loadOBJTiles()와 loadOBJTilesWithLOD() 공용.
+
+       _loadOBJFromUrl(objLoader, url, name, materials)
+         URL에서 OBJ를 로드하고 머티리얼/그림자 설정 적용.
+         재사용 가능한 헬퍼.
+
+       _startLODUpgradeLoop(objLoader)
+         2초 간격으로 실행되는 백그라운드 루프:
+         - 카메라 300m 이내 타일: LOD0 로드 + THREE.LOD 레벨 재구성
+         - 카메라 600m 초과 타일: LOD0 지오메트리 해제 (메모리 절약)
+         - 1회당 1개 타일만 업그레이드 (네트워크 부하 분산)
+
+       _stopLODUpgradeLoop()
+         LOD 관리 타이머 정리. dispose()에서 자동 호출.
+
+     THREE.LOD Usage:
+       각 타일을 THREE.LOD 컨테이너에 넣어 Three.js의 내장 LOD 시스템 활용.
+       - LOD0 (distance 0): 풀 디테일 메시
+       - LOD2 (distance 200): 경량 메시
+       Three.js가 카메라 거리에 따라 자동으로 적절한 레벨 선택.
+
+
+3.7  app.js  [MODIFIED]
+     Path: vibe3d/frontend/static/app.js
+     Version: ?v=15
+
+     Modified Function: loadCityTiles()
+
+     변경 전:
+       /api/drone/citytiles 호출 → 전체 OBJ 순차 로딩
+
+     변경 후:
+       1) /api/drone/citytiles-lod 우선 호출
+       2) LOD 데이터가 있으면 (has_lods=true):
+          - loadOBJTilesWithLOD() 호출 (프로그레시브)
+          - LOD2 총 크기 + LOD0 총 크기 안내 메시지
+       3) LOD 데이터 없으면 (has_lods=false 또는 오류):
+          - 기존 /api/drone/citytiles 폴백
+          - loadOBJTiles() 호출 (원본 순차 로딩)
+
+
+3.8  index.html  [MODIFIED]
+     Path: vibe3d/frontend/index.html
+
+     Changes:
+       - app.js?v=14     → app.js?v=15
+       - scene-viewer.js?v=15 → scene-viewer.js?v=16
+       (브라우저/Cloudflare 캐시 무효화)
+
+
+=== Part D: Unity Script Backups (in git repo) ===
+
+3.9   vibe3d/unity-scripts/Editor/CityTileLODGenerator.cs     [NEW - backup]
+3.10  vibe3d/unity-scripts/Editor/Vibe3DCityTilePostprocessor.cs  [NEW - backup]
+3.11  vibe3d/unity-scripts/Runtime/CityTileStreamer.cs         [NEW - backup]
+
+
+4. Architecture
+--------------------------------------------------------------------------------
+
+  [Unity Editor]
+       │
+       ├── CityTileLODGenerator.cs
+       │     ├── Vertex Clustering → LOD1 (.asset + .obj)
+       │     ├── Vertex Clustering → LOD2 (.asset + .obj)
+       │     ├── LODGroup setup (LOD0/LOD1/LOD2/Culled)
+       │     └── MeshCollider → LOD2 mesh
+       │
+       ├── Vibe3DCityTilePostprocessor.cs
+       │     └── isReadable = true (메시 데이터 접근 허용)
+       │
+       └── CityTileStreamer.cs (Runtime)
+             └── 거리 기반 SetActive(true/false)
+
+  [Backend - Python]
+       │
+       ├── lod_server.py
+       │     ├── discover_lod_metadata()  → LOD 파일 스캔
+       │     └── get_lod_file_path()      → 파일 경로 해석
+       │
+       └── router.py
+             ├── GET /api/drone/citytiles-lod      → 메타데이터
+             └── GET /api/drone/citytiles/{t}/LOD/  → 파일 서빙
+
+  [Frontend - JavaScript]
+       │
+       ├── app.js
+       │     └── loadCityTiles()
+       │           ├── Try: /api/drone/citytiles-lod (LOD)
+       │           └── Fallback: /api/drone/citytiles (원본)
+       │
+       └── scene-viewer.js
+             ├── loadOBJTilesWithLOD()
+             │     ├── Phase 1: ALL LOD2 load (fast)
+             │     └── Phase 2: Nearby LOD0 upgrade (background)
+             ├── THREE.LOD containers
+             └── Memory management (LOD0 dispose >600m)
+
+
+5. Usage Instructions
+--------------------------------------------------------------------------------
+
+5.1  Unity에서 LOD 생성:
+     1) Unity Editor 열기
+     2) 메뉴: Vibe3D > Generate City Tile LODs
+     3) "Replace Colliders with LOD2" 체크 (기본값)
+     4) "Export OBJ for Web Viewer" 체크 (기본값)
+     5) "Generate LODs for All City Tiles" 클릭
+     6) 진행 바 완료 대기 (14개 타일, 약 2-5분)
+
+5.2  CityTileStreamer 설정:
+     1) Hierarchy에서 CityTiles_Root 선택
+     2) Add Component > CityTileStreamer
+     3) Inspector에서 거리값 조정 (기본값 권장)
+     4) Play 모드에서 카메라 이동으로 테스트
+
+5.3  웹 뷰어 테스트:
+     1) 백엔드 시작: python -m uvicorn vibe3d.backend.main:app --port 8091
+     2) 브라우저: http://127.0.0.1:8091
+     3) City Tiles 버튼 클릭
+     4) LOD2 먼저 로딩 → 카메라 이동 시 LOD0 자동 업그레이드 확인
+     5) Network 탭에서 LOD 파일 로딩 순서 확인
+
+
+6. Verification Checklist
+--------------------------------------------------------------------------------
+
+  [ ] LOD 에셋 생성: Assets/CityTiles/Tile-37-26-1-1/LOD/ 파일 존재
+  [ ] LODGroup 전환: Scene View 줌으로 LOD 단계 변경 확인
+  [ ] 콜라이더: Inspector에서 LOD2 메시 참조 확인
+  [ ] 스트리머 Gizmos: CityTiles_Root 선택 시 거리 원 시각화
+  [ ] Play 모드: 카메라 이동 시 타일 활성/비활성 전환 확인
+  [ ] API: curl http://127.0.0.1:8091/api/drone/citytiles-lod → lod_levels 포함
+  [ ] 웹 뷰어: Network 탭에서 LOD2 먼저 로드, 근접 시 LOD0 업그레이드
+
+
+7. Algorithm Detail: Vertex Clustering Decimation
+--------------------------------------------------------------------------------
+
+  Input:  Source mesh (vertices, triangles, UVs, normals)
+  Param:  Target ratio (0.0 ~ 1.0)
+
+  Step 1: Calculate grid cell size
+    - targetVerts = srcVertCount * targetRatio
+    - cellSize = (boundingVolume / targetVerts) ^ (1/3)
+
+  Step 2: Assign vertices to grid cells
+    - cellId = floor((v.x - min.x) / cellSize) +
+               floor((v.y - min.y) / cellSize) * gridX +
+               floor((v.z - min.z) / cellSize) * gridX * gridY
+
+  Step 3: Merge vertices per cell
+    - Position: arithmetic mean of all cell vertices
+    - UV: weighted average
+    - Normal: average + normalize
+
+  Step 4: Remap triangles
+    - For each original triangle (a, b, c):
+      - Map to new vertices via cell lookup
+      - If any two vertices map to same cell → degenerate → skip
+
+  Result: Decimated mesh preserving submesh structure
+
+
+8. File Sizes (approximate per tile)
+--------------------------------------------------------------------------------
+
+  | Level | Vertex Ratio | Approx Size (per tile) | Total (14 tiles) |
+  |-------|-------------|------------------------|------------------|
+  | LOD0  | 100%        | ~100 MB                | ~1,400 MB        |
+  | LOD1  |  40%        |  ~40 MB                |   ~560 MB        |
+  | LOD2  |  15%        |  ~15 MB                |   ~210 MB        |
+  | LOD3  | Culled      |    0 MB                |      0 MB        |
+
+
+================================================================================
+  End of Document
+================================================================================

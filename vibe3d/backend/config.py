@@ -55,3 +55,13 @@ UNITY_PROJECT_PATH = os.environ.get(
     r"C:\UnityProjects\My project",
 )
 DEFAULT_SCENE = os.environ.get("DEFAULT_SCENE", "bio-plants")
+
+# Data directory (workflows, drone projects, etc.)
+DATA_DIR = BASE_DIR / "data"
+
+# ── Drone2Twin Pipeline ──────────────────────────────────────
+BLENDER_PATH = os.environ.get("BLENDER_PATH", "blender")
+COLMAP_PATH = os.environ.get("COLMAP_PATH", "colmap")
+RECON_ENGINE = os.environ.get("RECON_ENGINE", "colmap")  # colmap / realitycapture
+DRONE_PROJECTS_DIR = os.environ.get("DRONE_PROJECTS_DIR", "")
+NGINX_DEPLOY_DIR = os.environ.get("NGINX_DEPLOY_DIR", "")

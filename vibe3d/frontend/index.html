@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vibe3D Unity Accelerator</title>
-    <link rel="stylesheet" href="/static/style.css?v=7">
+    <link rel="stylesheet" href="/static/style.css?v=12">
     <script type="importmap">
     {
         "imports": {
@@ -50,6 +50,10 @@
                     <button class="toolbar-btn" onclick="webglBuild()" title="WebGL Build" id="webglBuildBtn">
                         <span class="tb-icon">&#128230;</span>
                     </button>
+                    <div class="toolbar-sep"></div>
+                    <button class="toolbar-btn" onclick="toggleCityTiles()" title="Load City Tiles 3D" id="cityTilesBtn">
+                        <span class="tb-icon">&#127961;</span>
+                    </button>
                 </div>
             </div>
             <div class="header-right">
@@ -73,6 +77,7 @@
                     <button class="ptab active" data-panel="explorer" onclick="switchPanel('left','explorer')">Explorer</button>
                     <button class="ptab" data-panel="drawing" onclick="switchPanel('left','drawing')">Drawing</button>
                     <button class="ptab" data-panel="presets" onclick="switchPanel('left','presets')">Presets</button>
+                    <button class="ptab" data-panel="drone" onclick="switchPanel('left','drone')">Drone2Twin</button>
                 </div>
 
                 <!-- Explorer -->
@@ -133,6 +138,11 @@
                 <!-- Presets -->
                 <div class="panel-body" id="left-presets">
                     <div class="preset-list" id="presetList"></div>
+                </div>
+
+                <!-- Drone2Twin -->
+                <div class="panel-body" id="left-drone">
+                    <div id="droneWizardContainer"></div>
                 </div>
 
                 <div class="panel-resize" onmousedown="startResize(event,'left')"></div>
@@ -315,7 +325,8 @@
     <script src="/static/plan-visual.js?v=6"></script>
     <script src="/static/suggest-ui.js?v=6"></script>
     <script src="/static/source-picker.js?v=6"></script>
-    <script src="/static/app.js?v=12"></script>
-    <script type="module" src="/static/scene-viewer.js?v=10"></script>
+    <script src="/static/drone-wizard.js?v=1"></script>
+    <script src="/static/app.js?v=15"></script>
+    <script type="module" src="/static/scene-viewer.js?v=16"></script>
 </body>
 </html>

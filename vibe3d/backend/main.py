@@ -36,6 +36,7 @@ from .workflow_manager import WorkflowManager
 from .nlu_engine import NLUEngine
 from .component_library import ComponentLibrary
 from .webgl_builder import generate_setup_plan, generate_build_plan
+from .drone_pipeline.router import router as drone_router, get_orchestrator as get_drone_orchestrator
 from ..mcp_client import UnityMCPClient
 
 # ── Logging ──────────────────────────────────────────────────
@@ -82,6 +83,9 @@ if frontend_dir.exists():
         # Return a minimal 1x1 transparent ICO to suppress 404
         from fastapi.responses import Response
         return Response(content=b"", media_type="image/x-icon", status_code=204)
+
+# ── Drone2Twin Pipeline Router ───────────────────────────────
+app.include_router(drone_router)
 
 # ── State ────────────────────────────────────────────────────
 
@@ -2083,11 +2087,20 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.on_event("startup")
 async def startup():
-    """Initialize MCP connection on startup."""
+    """Initialize MCP connection and Drone2Twin pipeline on startup."""
     logger.info("Vibe3D Accelerator v2.0 starting...")
     logger.info("MCP Server: %s", config.MCP_SERVER_URL)
     logger.info("Unity Project: %s", config.UNITY_PROJECT_PATH)
     logger.info("LLM available: %s", bool(config.ANTHROPIC_API_KEY))
+
+    # Inject dependencies into Drone2Twin pipeline orchestrator
+    drone_orch = get_drone_orchestrator()
+    drone_orch.set_dependencies(
+        mcp_client=mcp_client,
+        executor=executor,
+        broadcast_fn=broadcast,
+    )
+    logger.info("Drone2Twin pipeline initialized")
     try:
         if await asyncio.to_thread(mcp_client.initialize):
             logger.info("MCP connected (session: %s)", mcp_client.session_id)

@@ -24,6 +24,7 @@ MODEL_EXTENSIONS = {".fbx", ".obj", ".glb", ".gltf", ".blend", ".3ds", ".dae"}
 TEXTURE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tga", ".bmp"}
 DATA_EXTENSIONS = {".csv", ".json", ".xml", ".yaml"}
 DRAWING_EXTENSIONS = {".dwg", ".dxf", ".pdf"}
+DRONE_IMAGE_EXTENSIONS = {".dng", ".raw", ".cr2", ".nef", ".arw", ".tif", ".tiff"}
 
 # Common texture companion extensions for 3D models
 TEXTURE_COMPANION_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".psd"}
@@ -40,6 +41,8 @@ def _classify_extension(ext: str) -> str:
         return "data"
     if ext_lower in DRAWING_EXTENSIONS:
         return "drawing"
+    if ext_lower in DRONE_IMAGE_EXTENSIONS:
+        return "drone_image"
     return "other"
 
 

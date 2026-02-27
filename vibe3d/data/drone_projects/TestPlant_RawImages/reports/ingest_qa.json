@@ -1,0 +1,22 @@
+{
+  "score": 55,
+  "input_option": "raw_images",
+  "image_count": 15,
+  "avg_resolution": "1446x1084",
+  "blur_count": 15,
+  "exif_gps_missing": 0,
+  "overlap_estimate": "good",
+  "gcp_available": false,
+  "mesh_files": [],
+  "texture_files": [],
+  "total_size_mb": 2.3,
+  "warnings": [
+    "Only 15 images — minimum 20-30 recommended for good reconstruction",
+    "Average resolution 1446x1084 — low for photogrammetry",
+    "15/15 images appear blurry"
+  ],
+  "recommendations": [
+    "All images have GPS data — good for georeferencing",
+    "No flight log — upload for better QA analysis"
+  ]
+}

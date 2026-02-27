@@ -1,0 +1,23 @@
+{
+  "score": 85,
+  "input_option": "vendor_pack",
+  "image_count": 0,
+  "avg_resolution": "",
+  "blur_count": 0,
+  "exif_gps_missing": 0,
+  "overlap_estimate": "",
+  "gcp_available": false,
+  "mesh_files": [
+    "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\vendor\\mesh_high.glb"
+  ],
+  "texture_files": [
+    "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\vendor\\textures\\diffuse.jpg",
+    "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\vendor\\textures\\normal.jpg"
+  ],
+  "total_size_mb": 0.5,
+  "warnings": [],
+  "recommendations": [
+    "metadata.json found — coordinate/scale info available",
+    "No LOD variants — will generate LOD0/1/2 during optimization"
+  ]
+}

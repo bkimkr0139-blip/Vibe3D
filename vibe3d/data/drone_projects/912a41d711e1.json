@@ -1,0 +1,60 @@
+{
+  "id": "912a41d711e1",
+  "name": "TestPlant_Drone",
+  "input_option": "vendor_pack",
+  "preset": "preview",
+  "base_dir": "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone",
+  "stage": "unity_import",
+  "run_id": "9bf7adf5",
+  "created_at": 1771906778.993501,
+  "updated_at": 1771979484.2867467,
+  "artifacts": {
+    "ingest_qa": [
+      "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\reports\\ingest_qa.json"
+    ],
+    "optimization": [
+      "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\work\\optimize\\mesh_lod0.glb"
+    ]
+  },
+  "error": null,
+  "qa_report": {
+    "score": 85,
+    "input_option": "vendor_pack",
+    "image_count": 0,
+    "avg_resolution": "",
+    "blur_count": 0,
+    "exif_gps_missing": 0,
+    "overlap_estimate": "",
+    "gcp_available": false,
+    "mesh_files": [
+      "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\vendor\\mesh_high.glb"
+    ],
+    "texture_files": [
+      "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\vendor\\textures\\diffuse.jpg",
+      "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\vendor\\textures\\normal.jpg"
+    ],
+    "total_size_mb": 0.5,
+    "warnings": [],
+    "recommendations": [
+      "metadata.json found — coordinate/scale info available",
+      "No LOD variants — will generate LOD0/1/2 during optimization"
+    ]
+  },
+  "optimize_report": {
+    "input_polycount": 99997,
+    "output_polycounts": {
+      "lod0": 99997
+    },
+    "texture_sizes": [],
+    "decimation_ratio": 0.0,
+    "output_files": [
+      "C:\\Users\\User\\works\\bio\\vibe3d\\data\\drone_projects\\TestPlant_Drone\\work\\optimize\\mesh_lod0.glb"
+    ],
+    "blender_available": false,
+    "elapsed_seconds": 0.0,
+    "warnings": [
+      "Blender not installed (path: 'blender'). Running in stub mode — input file copied as LOD0 without optimization. Install Blender and set BLENDER_PATH in .env for full LOD generation.",
+      "LOD1/LOD2 not generated — Unity-side SimplifyMesh can be used as fallback."
+    ]
+  }
+}

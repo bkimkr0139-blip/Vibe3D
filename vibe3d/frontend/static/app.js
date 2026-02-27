@@ -95,6 +95,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.SourcePicker) {
         sourcePicker = window.SourcePicker;
     }
+
+    // Drone2Twin Wizard
+    if (typeof DroneWizard === 'function') {
+        window.droneWizard = new DroneWizard();
+        window.droneWizard.init('droneWizardContainer');
+    }
 });
 
 // ── Input Handling ──────────────────────────────────────────
@@ -249,6 +255,12 @@ function handleWS(event, data) {
     }
     if (event === 'stage_update') handleStageUpdate(data);
     if (event === 'composite_progress') handleCompositeProgress(data);
+    // Drone2Twin pipeline events
+    if (event.startsWith('drone_')) {
+        if (typeof droneWizard !== 'undefined' && droneWizard.handleWS) {
+            droneWizard.handleWS(event, data);
+        }
+    }
 }
 
 function setFooterStatus(text) {
@@ -2026,3 +2038,107 @@ window.addEventListener('message', (event) => {
         }, '*');
     }
 });
+
+// ── City Tiles 3D Viewer ─────────────────────────────────────
+
+let _cityTilesLoaded = false;
+
+async function loadCityTiles() {
+    if (!window.sceneViewer || !window.sceneViewer.initialized) {
+        // Switch to 3D view first
+        setSceneViewMode('3d');
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (!window.sceneViewer || !window.sceneViewer.initialized) {
+        addChatMsg('system', '3D 뷰가 초기화되지 않았습니다.');
+        return;
+    }
+
+    addChatMsg('system', 'City Tiles 데이터를 로딩 중...');
+
+    // Progress callback
+    window.sceneViewer.onTileProgress = (loaded, total) => {
+        const pct = Math.round((loaded / total) * 100);
+        setFooterStatus(`City Tiles: ${loaded}/${total} (${pct}%)`);
+    };
+
+    // ── Try LOD endpoint first (progressive loading) ──
+    try {
+        const lodResp = await fetch(`${API}/api/drone/citytiles-lod`);
+        if (lodResp.ok) {
+            const lodData = await lodResp.json();
+            if (lodData.has_lods && lodData.tiles && lodData.tiles.length > 0) {
+                addChatMsg('system',
+                    `${lodData.tile_count}개 타일 발견 (LOD 지원)\n` +
+                    `LOD2 우선 로딩 (~${lodData.total_lod2_mb} MB) → 풀 디테일 ${lodData.total_lod0_mb} MB`
+                );
+
+                const result = await window.sceneViewer.loadOBJTilesWithLOD(lodData.tiles);
+                _cityTilesLoaded = true;
+
+                addChatMsg('system',
+                    `Phase 1 완료: ${result.loaded}/${result.total}개 타일 (LOD2)\n` +
+                    `카메라 근처 타일은 자동으로 풀 디테일로 업그레이드됩니다.`
+                );
+                setFooterStatus(`City Tiles: ${result.loaded}개 (LOD)`);
+
+                const btn = document.getElementById('cityTilesBtn');
+                if (btn) btn.classList.add('active');
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn('[CityTiles] LOD endpoint failed, falling back:', e);
+    }
+
+    // ── Fallback: original full-mesh loading ──
+    try {
+        const resp = await fetch(`${API}/api/drone/citytiles`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+
+        if (!data.tiles || data.tiles.length === 0) {
+            addChatMsg('system', 'CityTiles가 없습니다. Unity Assets/CityTiles/ 폴더를 확인하세요.');
+            return;
+        }
+
+        // Sort tiles by size (smallest first for faster initial display)
+        const sortedTiles = [...data.tiles].sort((a, b) => a.size_mb - b.size_mb);
+        const totalMB = data.total_size_mb;
+
+        addChatMsg('system',
+            `${data.tile_count}개 타일 발견 (${totalMB} MB)\n` +
+            `작은 타일부터 순서대로 로딩합니다...`
+        );
+
+        const result = await window.sceneViewer.loadOBJTiles(sortedTiles);
+        _cityTilesLoaded = true;
+
+        addChatMsg('system',
+            `City Tiles 로딩 완료! ${result.loaded}/${result.total}개 타일\n` +
+            `Row별: ${Object.keys(data.rows).map(r => `Row ${r} (${data.rows[r].length}개)`).join(', ')}`
+        );
+        setFooterStatus(`City Tiles: ${result.loaded}개 로딩됨`);
+
+        // Update toolbar button state
+        const btn = document.getElementById('cityTilesBtn');
+        if (btn) btn.classList.add('active');
+
+    } catch (e) {
+        addChatMsg('system', `City Tiles 로딩 실패: ${e.message}`);
+        console.error('[CityTiles]', e);
+    }
+}
+
+function toggleCityTiles() {
+    if (!_cityTilesLoaded) {
+        loadCityTiles();
+    } else if (window.sceneViewer) {
+        const visible = window.sceneViewer._tileGroup?.visible;
+        window.sceneViewer.setTilesVisible(!visible);
+        const btn = document.getElementById('cityTilesBtn');
+        if (btn) btn.classList.toggle('active', !visible);
+        addChatMsg('system', !visible ? 'City Tiles 표시' : 'City Tiles 숨김');
+    }
+}

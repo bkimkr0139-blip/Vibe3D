@@ -25,6 +25,9 @@ class ErrorCategory(str, Enum):
     E4_POSITION_CONFLICT = "E4_POSITION_CONFLICT"
     E5_SCHEMA_ERROR = "E5_SCHEMA_ERROR"
     E6_BATCH_LIMIT = "E6_BATCH_LIMIT"
+    E7_RECON_FAIL = "E7_RECON_FAIL"
+    E8_OPTIMIZE_FAIL = "E8_OPTIMIZE_FAIL"
+    E9_PIPELINE_ERROR = "E9_PIPELINE_ERROR"
 
 
 # ── Analysis result ─────────────────────────────────────────
@@ -107,6 +110,28 @@ _BATCH_PATTERNS = [
     re.compile(r"(?i)max(?:imum)?\s+(?:batch|actions)\s+(?:exceeded|reached)"),
 ]
 
+_RECON_PATTERNS = [
+    re.compile(r"(?i)reconstruction\s+(?:failed|error)"),
+    re.compile(r"(?i)(?:sfm|mvs|colmap|realitycapture|metashape)\s+(?:error|failed|crash)"),
+    re.compile(r"(?i)feature\s+match(?:ing)?\s+(?:failed|insufficient)"),
+    re.compile(r"(?i)sparse\s+(?:reconstruction\s+)?failed"),
+    re.compile(r"(?i)dense\s+(?:reconstruction\s+)?failed"),
+]
+
+_OPTIMIZE_PATTERNS = [
+    re.compile(r"(?i)blender\s+(?:error|failed|crash|exited)"),
+    re.compile(r"(?i)decimate\s+(?:failed|error)"),
+    re.compile(r"(?i)mesh\s+(?:optimization|processing)\s+(?:failed|error)"),
+    re.compile(r"(?i)export\s+(?:failed|error).*(?:glb|fbx|obj)"),
+]
+
+_PIPELINE_PATTERNS = [
+    re.compile(r"(?i)pipeline\s+(?:failed|error|stage)"),
+    re.compile(r"(?i)drone2twin\s+(?:error|failed)"),
+    re.compile(r"(?i)ingest\s+(?:qa\s+)?(?:failed|error)"),
+    re.compile(r"(?i)deploy(?:ment)?\s+(?:failed|error)"),
+]
+
 
 # ── Core classification ─────────────────────────────────────
 
@@ -118,6 +143,9 @@ def _classify(error_str: str) -> ErrorCategory:
         (_NOT_FOUND_PATTERNS, ErrorCategory.E2_OBJECT_NOT_FOUND),
         (_SCHEMA_PATTERNS, ErrorCategory.E5_SCHEMA_ERROR),
         (_POSITION_PATTERNS, ErrorCategory.E4_POSITION_CONFLICT),
+        (_RECON_PATTERNS, ErrorCategory.E7_RECON_FAIL),
+        (_OPTIMIZE_PATTERNS, ErrorCategory.E8_OPTIMIZE_FAIL),
+        (_PIPELINE_PATTERNS, ErrorCategory.E9_PIPELINE_ERROR),
         (_PARSE_PATTERNS, ErrorCategory.E1_PARSE_FAIL),
     ]
     for patterns, category in checks:
