@@ -14,7 +14,13 @@ let selectedFiles = new Set();
 // Unified mode — no separate command/chat toggle
 let sceneAutoRefresh = false;
 let sceneRefreshTimer = null;
-let _sceneObjects = {}; // name → {position, scale, path, primitive, color}
+let _sceneObjects = {}; // uid (path) → {name, position, scale, path, primitive, color}
+function _findSceneObjectByName(name) {
+    for (const obj of Object.values(_sceneObjects)) {
+        if (obj.name === name) return obj;
+    }
+    return null;
+}
 let currentComponentId = null;
 let sceneViewMode = '3d'; // '3d' or 'screenshot'
 let scene3dInitialized = false;
@@ -143,9 +149,11 @@ function insertExample(el) {
 // ── Target Tag (object selection → command input) ────────────
 
 let _targetObjectName = null;
+let _targetObjectUid = null;
 
-function setTargetTag(name) {
+function setTargetTag(name, uid) {
     _targetObjectName = name;
+    _targetObjectUid = uid || name;
     const tag = document.getElementById('targetTag');
     if (tag) {
         tag.textContent = name;
@@ -155,14 +163,40 @@ function setTargetTag(name) {
     const input = document.getElementById('chatInput');
     input.placeholder = `"${name}"에 대한 명령을 입력하세요...`;
     input.focus();
+
+    // Show selection preview banner
+    const preview = document.getElementById('selectionPreview');
+    if (preview) {
+        preview.style.display = 'flex';
+        const nameEl = document.getElementById('selPreviewName');
+        const detailEl = document.getElementById('selPreviewDetail');
+        if (nameEl) nameEl.textContent = name;
+        if (detailEl) {
+            const obj = _sceneObjects[_targetObjectUid];
+            const parts = [];
+            if (obj?.primitive) parts.push(obj.primitive);
+            if (obj?.tag && obj.tag !== 'Untagged') parts.push(`Tag: ${obj.tag}`);
+            if (obj?.type) parts.push(obj.type);
+            if (obj?.path) parts.push(obj.path);
+            detailEl.textContent = parts.length ? parts.join(' | ') : 'Unity Object';
+        }
+    }
+
+    // Auto-switch to Hierarchy tab to show inspector
+    switchPanel('right', 'hierarchy');
 }
 
 function clearTargetTag() {
     _targetObjectName = null;
+    _targetObjectUid = null;
     const tag = document.getElementById('targetTag');
     if (tag) tag.style.display = 'none';
     const input = document.getElementById('chatInput');
     input.placeholder = '자연어 명령을 입력하세요... (Enter로 전송)';
+
+    // Hide selection preview banner
+    const preview = document.getElementById('selectionPreview');
+    if (preview) preview.style.display = 'none';
 }
 
 // ── Status ──────────────────────────────────────────────────
@@ -260,6 +294,10 @@ function handleWS(event, data) {
         if (typeof droneWizard !== 'undefined' && droneWizard.handleWS) {
             droneWizard.handleWS(event, data);
         }
+    }
+    // Mesh Edit events
+    if (event.startsWith('mesh_edit_')) {
+        mesheditHandleWS(event, data);
     }
 }
 
@@ -599,18 +637,18 @@ function init3DViewer() {
         const container = document.getElementById('scene3dContainer');
         if (!container) return;
         window.sceneViewer.init(container);
-        window.sceneViewer.onSelect = (name) => {
+        window.sceneViewer.onSelect = (name, uid) => {
             selectedObject = name;
-            inspectObject(name);
+            inspectObject(name, uid);
             // Highlight in hierarchy
             document.querySelectorAll('.node-row.selected').forEach(el => el.classList.remove('selected'));
             document.querySelectorAll('.node-name').forEach(el => {
                 if (el.textContent === name) el.closest('.node-row')?.classList.add('selected');
             });
             // Set target tag in command input
-            setTargetTag(name);
+            setTargetTag(name, uid);
             // Notify parent window (HeatOps Nav X) of equipment selection
-            notifyEquipmentSelected(name);
+            notifyEquipmentSelected(name, uid);
         };
         // Drag-to-move callback — sync position to Unity via MCP
         window.sceneViewer.onMove = async (name, unityPos) => {
@@ -652,10 +690,11 @@ async function refresh3DView() {
         if (data) {
             const count = (data.objects || []).length;
             if (count > 0) setFooterStatus(`3D: ${count} objects loaded`);
-            // Cache scene objects for equipment selection events
+            // Cache scene objects keyed by uid (path) for unique lookup
             _sceneObjects = {};
             for (const obj of (data.objects || [])) {
-                if (obj.name) _sceneObjects[obj.name] = obj;
+                const uid = obj.path || obj.name;
+                if (uid) _sceneObjects[uid] = obj;
             }
         }
         // Re-apply persistent color overrides after scene reload
@@ -749,6 +788,8 @@ function switchPanel(side, name) {
     const panel = side === 'left' ? document.getElementById('panelLeft') : document.getElementById('panelRight');
     panel.querySelectorAll('.ptab').forEach(t => t.classList.toggle('active', t.dataset.panel === name));
     panel.querySelectorAll('.panel-body').forEach(b => b.classList.toggle('active', b.id === `${side}-${name}`));
+    // Auto-load tiles when Mesh Edit tab is opened
+    if (name === 'meshedit' && !_mesheditTiles.length) mesheditInit();
 }
 
 function switchJobTab(name) {
@@ -1369,12 +1410,19 @@ function filterHierarchy() {
 
 // ── Inspector ───────────────────────────────────────────────
 
-async function inspectObject(name) {
+async function inspectObject(name, uid) {
     const body = document.getElementById('inspectorBody');
     body.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
 
+    // Fallback: show local cache data while API loads (or if MCP unavailable)
+    const lookupKey = uid || name;
+    const cached = _sceneObjects[lookupKey] || _findSceneObjectByName(name);
+
     try {
-        const resp = await fetch(`${API}/api/object/inspect?target=${encodeURIComponent(name)}&search_method=by_name`);
+        // Use by_path when path (uid) available for precise lookup; fallback to by_name
+        const searchMethod = (uid && uid !== name) ? 'by_path' : 'by_name';
+        const searchTarget = (uid && uid !== name) ? uid : name;
+        const resp = await fetch(`${API}/api/object/inspect?target=${encodeURIComponent(searchTarget)}&search_method=${searchMethod}`);
         const data = await resp.json();
 
         const content = data?.result?.content || [];
@@ -1390,48 +1438,140 @@ async function inspectObject(name) {
             }
         }
 
-        if (!objInfo) { body.innerHTML = `<div class="empty-state"><p>"${esc(name)}" not found</p></div>`; return; }
+        if (!objInfo) {
+            // Fallback to local cache when MCP not connected
+            if (cached) {
+                _renderInspectorLocal(body, name, cached);
+            } else {
+                body.innerHTML = `<div class="empty-state"><p>"${esc(name)}" not found</p></div>`;
+            }
+            return;
+        }
 
-        const t = objInfo.transform || {};
-        const pos = t.position || t.localPosition || {};
-        const rot = t.rotation || t.localRotation || {};
-        const scl = t.scale || t.localScale || {};
-
-        body.innerHTML = `
-            <div style="font-weight:600;margin-bottom:4px;color:var(--accent);font-size:12px">${esc(objInfo.name || name)}</div>
-            <div class="inspector-field">
-                <span class="inspector-label">Pos</span>
-                <div class="inspector-value">
-                    <input id="insp-px" value="${(pos.x||0).toFixed(2)}">
-                    <input id="insp-py" value="${(pos.y||0).toFixed(2)}">
-                    <input id="insp-pz" value="${(pos.z||0).toFixed(2)}">
-                </div>
-            </div>
-            <div class="inspector-field">
-                <span class="inspector-label">Rot</span>
-                <div class="inspector-value">
-                    <input id="insp-rx" value="${(rot.x||0).toFixed(1)}">
-                    <input id="insp-ry" value="${(rot.y||0).toFixed(1)}">
-                    <input id="insp-rz" value="${(rot.z||0).toFixed(1)}">
-                </div>
-            </div>
-            <div class="inspector-field">
-                <span class="inspector-label">Scale</span>
-                <div class="inspector-value">
-                    <input id="insp-sx" value="${(scl.x||1).toFixed(2)}">
-                    <input id="insp-sy" value="${(scl.y||1).toFixed(2)}">
-                    <input id="insp-sz" value="${(scl.z||1).toFixed(2)}">
-                </div>
-            </div>
-            <div class="inspector-actions">
-                <button class="btn btn-xs btn-primary" onclick="applyInspectorTransform()">Apply</button>
-                <button class="btn btn-xs" onclick="duplicateSelected()">Duplicate</button>
-                <button class="btn btn-xs" style="color:var(--error)" onclick="deleteSelected()">Delete</button>
-            </div>
-        `;
+        _renderInspectorFull(body, name, objInfo, cached);
     } catch (e) {
-        body.innerHTML = `<div class="empty-state"><p>Error: ${esc(e.message)}</p></div>`;
+        // API error — show local data if available
+        if (cached) {
+            _renderInspectorLocal(body, name, cached);
+        } else {
+            body.innerHTML = `<div class="empty-state"><p>Error: ${esc(e.message)}</p></div>`;
+        }
     }
+}
+
+function _renderInspectorFull(body, name, objInfo, cached) {
+    const t = objInfo.transform || {};
+    const pos = t.position || t.localPosition || {};
+    const rot = t.rotation || t.localRotation || {};
+    const scl = t.scale || t.localScale || {};
+
+    // Object header
+    const objName = objInfo.name || name;
+    const objPath = objInfo.path || cached?.path || '';
+
+    // Badges
+    let badges = '';
+    const tag = objInfo.tag || cached?.tag || '';
+    const layer = objInfo.layer || '';
+    const isActive = objInfo.activeSelf !== undefined ? objInfo.activeSelf : true;
+    if (tag && tag !== 'Untagged') badges += `<span class="inspector-badge tag">${esc(tag)}</span>`;
+    if (layer && layer !== 'Default') badges += `<span class="inspector-badge layer">${esc(layer)}</span>`;
+    badges += `<span class="inspector-badge ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span>`;
+    const prim = cached?.primitive || objInfo.type || '';
+    if (prim) badges += `<span class="inspector-badge type">${esc(prim)}</span>`;
+
+    // Components
+    let compsHtml = '';
+    const comps = objInfo.components || [];
+    if (comps.length) {
+        compsHtml = `<div class="inspector-info-divider">Components</div>
+            <div class="inspector-components">${comps.map(c => {
+                const cName = typeof c === 'string' ? c : (c.type || c.name || '');
+                return `<span class="inspector-comp-item">${esc(cName)}</span>`;
+            }).join('')}</div>`;
+    }
+
+    body.innerHTML = `
+        <div class="inspector-header">
+            <div class="inspector-header-name">${esc(objName)}</div>
+            ${objPath ? `<div class="inspector-header-path">${esc(objPath)}</div>` : ''}
+        </div>
+        <div class="inspector-badges">${badges}</div>
+        ${compsHtml}
+        <div class="inspector-info-divider">Transform</div>
+        <div class="inspector-field">
+            <span class="inspector-label">Pos</span>
+            <div class="inspector-value">
+                <input id="insp-px" value="${(pos.x||0).toFixed(2)}">
+                <input id="insp-py" value="${(pos.y||0).toFixed(2)}">
+                <input id="insp-pz" value="${(pos.z||0).toFixed(2)}">
+            </div>
+        </div>
+        <div class="inspector-field">
+            <span class="inspector-label">Rot</span>
+            <div class="inspector-value">
+                <input id="insp-rx" value="${(rot.x||0).toFixed(1)}">
+                <input id="insp-ry" value="${(rot.y||0).toFixed(1)}">
+                <input id="insp-rz" value="${(rot.z||0).toFixed(1)}">
+            </div>
+        </div>
+        <div class="inspector-field">
+            <span class="inspector-label">Scale</span>
+            <div class="inspector-value">
+                <input id="insp-sx" value="${(scl.x||1).toFixed(2)}">
+                <input id="insp-sy" value="${(scl.y||1).toFixed(2)}">
+                <input id="insp-sz" value="${(scl.z||1).toFixed(2)}">
+            </div>
+        </div>
+        <div class="inspector-actions">
+            <button class="btn btn-xs btn-primary" onclick="applyInspectorTransform()">Apply</button>
+            <button class="btn btn-xs" onclick="duplicateSelected()">Duplicate</button>
+            <button class="btn btn-xs" style="color:var(--error)" onclick="deleteSelected()">Delete</button>
+        </div>
+    `;
+}
+
+function _renderInspectorLocal(body, name, cached) {
+    // Render from local _sceneObjects cache (no MCP needed)
+    const pos = cached.position || {};
+    const scl = cached.scale || {};
+
+    let badges = '';
+    const tag = cached.tag || '';
+    if (tag && tag !== 'Untagged') badges += `<span class="inspector-badge tag">${esc(tag)}</span>`;
+    const prim = cached.primitive || cached.type || '';
+    if (prim) badges += `<span class="inspector-badge type">${esc(prim)}</span>`;
+    badges += `<span class="inspector-badge active">Local</span>`;
+
+    body.innerHTML = `
+        <div class="inspector-header">
+            <div class="inspector-header-name">${esc(name)}</div>
+            ${cached.path ? `<div class="inspector-header-path">${esc(cached.path)}</div>` : ''}
+        </div>
+        <div class="inspector-badges">${badges}</div>
+        <div class="inspector-info-divider">Transform (local cache)</div>
+        <div class="inspector-field">
+            <span class="inspector-label">Pos</span>
+            <div class="inspector-value">
+                <input id="insp-px" value="${(pos.x||0).toFixed(2)}">
+                <input id="insp-py" value="${(pos.y||0).toFixed(2)}">
+                <input id="insp-pz" value="${(pos.z||0).toFixed(2)}">
+            </div>
+        </div>
+        <div class="inspector-field">
+            <span class="inspector-label">Scale</span>
+            <div class="inspector-value">
+                <input id="insp-sx" value="${(scl.x||1).toFixed(2)}">
+                <input id="insp-sy" value="${(scl.y||1).toFixed(2)}">
+                <input id="insp-sz" value="${(scl.z||1).toFixed(2)}">
+            </div>
+        </div>
+        <div class="inspector-actions">
+            <button class="btn btn-xs btn-primary" onclick="applyInspectorTransform()">Apply</button>
+            <button class="btn btn-xs" onclick="duplicateSelected()">Duplicate</button>
+            <button class="btn btn-xs" style="color:var(--error)" onclick="deleteSelected()">Delete</button>
+        </div>
+    `;
 }
 
 async function applyInspectorTransform() {
@@ -1952,8 +2092,8 @@ function extractTag(name) {
     return m ? m[0] : name;
 }
 
-function notifyEquipmentSelected(name) {
-    const obj = _sceneObjects[name];
+function notifyEquipmentSelected(name, uid) {
+    const obj = _sceneObjects[uid || name] || _findSceneObjectByName(name);
 
     const event = {
         type: 'EQUIPMENT_SELECTED',
@@ -2005,26 +2145,28 @@ window.addEventListener('message', (event) => {
     console.log('[Vibe3D ← Navigator] SELECT_OBJECT', { assetTag, assetName, assetId, sceneObjectCount: Object.keys(_sceneObjects).length });
 
     // Search priority: 1) assetTag → 2) assetName → 3) assetId (path)
-    let found = null;
-    for (const [name, obj] of Object.entries(_sceneObjects)) {
-        if (assetTag && (obj.tag === assetTag || extractTag(name) === assetTag)) { found = name; break; }
-        if (assetName && name === assetName) { found = name; break; }
-        if (assetId && (obj.path === assetId || name === assetId)) { found = name; break; }
+    let foundUid = null;
+    let foundName = null;
+    for (const [uid, obj] of Object.entries(_sceneObjects)) {
+        const objName = obj.name || uid;
+        if (assetTag && (obj.tag === assetTag || extractTag(objName) === assetTag)) { foundUid = uid; foundName = objName; break; }
+        if (assetName && objName === assetName) { foundUid = uid; foundName = objName; break; }
+        if (assetId && (obj.path === assetId || uid === assetId)) { foundUid = uid; foundName = objName; break; }
     }
 
-    if (found) {
-        // 3D viewer: purple outline + camera focus
+    if (foundUid) {
+        // 3D viewer: outline + camera focus
         if (window.sceneViewer && window.sceneViewer.initialized) {
-            window.sceneViewer.selectObject(found);
+            window.sceneViewer.selectObject(foundUid);
         }
-        inspectObject(found);      // right panel info
-        setTargetTag(found);       // @tag in chat input
-        selectedObject = found;
+        inspectObject(foundName, foundUid);  // right panel info
+        setTargetTag(foundName, foundUid);   // @tag in chat input
+        selectedObject = foundName;
 
         // Highlight in hierarchy tree
         document.querySelectorAll('.node-row.selected').forEach(el => el.classList.remove('selected'));
         document.querySelectorAll('.node-name').forEach(el => {
-            if (el.textContent === found) el.closest('.node-row')?.classList.add('selected');
+            if (el.textContent === foundName) el.closest('.node-row')?.classList.add('selected');
         });
     }
 
@@ -2142,3 +2284,2054 @@ function toggleCityTiles() {
         addChatMsg('system', !visible ? 'City Tiles 표시' : 'City Tiles 숨김');
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// GeoBIM — Building Extraction + Inspector + Measurement
+// ═══════════════════════════════════════════════════════════════
+
+let _geobimBuildings = [];
+let _geobimSelectedId = null;
+let _geobimExtracting = false;
+
+async function geobimExtract() {
+    if (_geobimExtracting) return;
+    _geobimExtracting = true;
+    const btn = document.getElementById('geobimExtractBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Extracting...'; }
+
+    // Determine tile folder from drone orchestrator or default
+    let tileFolder = '';
+    try {
+        const infoResp = await fetch(`${API}/api/drone/project-info`);
+        if (infoResp.ok) {
+            const info = await infoResp.json();
+            tileFolder = info.tile_folder || info.source_path || '';
+        }
+    } catch(e) { /* ignore */ }
+
+    if (!tileFolder) {
+        // Fallback: try Unity CityTiles path
+        const unityProject = window._unityProjectPath || 'C:/UnityProjects/My project';
+        tileFolder = `${unityProject}/Assets/CityTiles`;
+    }
+
+    addChatMsg('system', `GeoBIM: 건물 추출 시작...\nTile folder: ${tileFolder}`);
+
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/extract`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tile_folder: tileFolder }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+        // Poll status
+        await _pollGeoBIMStatus();
+    } catch (e) {
+        addChatMsg('system', `GeoBIM 추출 실패: ${e.message}`);
+    } finally {
+        _geobimExtracting = false;
+        if (btn) { btn.disabled = false; btn.textContent = 'Extract Buildings from Tiles'; }
+    }
+}
+
+async function _pollGeoBIMStatus() {
+    const maxWait = 120; // seconds
+    const interval = 2000;
+    let elapsed = 0;
+
+    while (elapsed < maxWait * 1000) {
+        await new Promise(r => setTimeout(r, interval));
+        elapsed += interval;
+
+        try {
+            const resp = await fetch(`${API}/api/drone/geobim/status`);
+            if (!resp.ok) break;
+            const s = await resp.json();
+
+            setFooterStatus(`GeoBIM: ${s.tiles_processed}/${s.tile_count} tiles (${s.building_count} buildings)`);
+
+            if (s.status === 'completed') {
+                addChatMsg('system',
+                    `GeoBIM 추출 완료! ${s.building_count}개 건물 발견\n` +
+                    `처리 시간: ${s.processing_time_s}s`
+                );
+                await _loadGeoBIMResults();
+                return;
+            } else if (s.status === 'failed') {
+                addChatMsg('system', `GeoBIM 추출 실패: ${s.error || 'Unknown error'}`);
+                return;
+            }
+        } catch(e) { break; }
+    }
+}
+
+async function _loadGeoBIMResults() {
+    try {
+        // Load summary
+        const sumResp = await fetch(`${API}/api/drone/geobim/summary`);
+        if (sumResp.ok) {
+            const sum = await sumResp.json();
+            _showGeoBIMStats(sum);
+        }
+
+        // Load buildings list
+        const bldgResp = await fetch(`${API}/api/drone/geobim/buildings`);
+        if (bldgResp.ok) {
+            const data = await bldgResp.json();
+            _geobimBuildings = data.buildings || [];
+            _renderGeoBIMBuildingList();
+        }
+
+        // Load footprints for 3D overlay
+        const fpResp = await fetch(`${API}/api/drone/geobim/footprints`);
+        if (fpResp.ok) {
+            const fpData = await fpResp.json();
+            if (window.sceneViewer && fpData.footprints) {
+                window.sceneViewer.loadFootprints(fpData.footprints);
+                // Wire building click callback
+                window.sceneViewer.onBuildingClick = (id) => geobimSelectBuilding(id);
+            }
+        }
+    } catch (e) {
+        console.error('[GeoBIM] Failed to load results:', e);
+    }
+}
+
+function _showGeoBIMStats(sum) {
+    const statsEl = document.getElementById('geobimStats');
+    if (statsEl) statsEl.style.display = '';
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    setVal('geobimBldgCount', sum.building_count || 0);
+    setVal('geobimAvgHeight', `${(sum.avg_height || 0).toFixed(1)}m`);
+    setVal('geobimMaxHeight', `${(sum.max_height || 0).toFixed(1)}m`);
+    setVal('geobimArea', `${(sum.total_footprint_area || 0).toFixed(0)}m²`);
+}
+
+function _renderGeoBIMBuildingList(filter = '') {
+    const listEl = document.getElementById('geobimBuildingList');
+    if (!listEl) return;
+
+    const query = filter.toLowerCase().trim();
+    const filtered = query
+        ? _geobimBuildings.filter(b =>
+            (b.label || '').toLowerCase().includes(query) ||
+            (b.tile_name || '').toLowerCase().includes(query) ||
+            (b.id || '').toLowerCase().includes(query)
+        )
+        : _geobimBuildings;
+
+    if (filtered.length === 0) {
+        listEl.innerHTML = query
+            ? `<div class="empty-state"><p>No match for "${filter}"</p></div>`
+            : '<div class="empty-state"><p>No buildings detected</p></div>';
+        return;
+    }
+
+    listEl.innerHTML = filtered.map(b => {
+        const confClass = b.confidence > 0.7 ? 'high' : b.confidence > 0.4 ? 'medium' : 'low';
+        return `
+            <div class="geobim-building-item" data-id="${b.id}" onclick="geobimSelectBuilding('${b.id}')">
+                <div class="geobim-building-icon">🏢</div>
+                <div class="geobim-building-info">
+                    <div class="geobim-building-name">${b.label}</div>
+                    <div class="geobim-building-meta">${b.height.toFixed(1)}m | ${b.footprint_area.toFixed(0)}m² | ${b.tile_name}</div>
+                </div>
+                <span class="geobim-confidence ${confClass}">${(b.confidence * 100).toFixed(0)}%</span>
+            </div>
+        `;
+    }).join('');
+}
+
+function geobimSearchBuildings(query) {
+    _renderGeoBIMBuildingList(query);
+}
+
+function geobimSelectBuilding(id) {
+    _geobimSelectedId = id;
+
+    // Highlight in list
+    document.querySelectorAll('.geobim-building-item').forEach(el => {
+        el.classList.toggle('selected', el.dataset.id === id);
+    });
+
+    // Show inspector
+    const b = _geobimBuildings.find(x => x.id === id);
+    if (!b) return;
+
+    _showBuildingInspector(b);
+
+    // Highlight footprint + BBox wireframe in 3D
+    if (window.sceneViewer) {
+        window.sceneViewer._highlightFootprint(id);
+        window.sceneViewer.highlightBuildingBBox(b);
+    }
+}
+
+function _showBuildingInspector(b) {
+    const inspectorBody = document.getElementById('inspectorBody');
+    if (!inspectorBody) return;
+
+    inspectorBody.innerHTML = `
+        <div class="geobim-inspector">
+            <div class="geobim-inspector-header">
+                <div class="geobim-building-icon">🏢</div>
+                <span class="geobim-inspector-title">${b.label}</span>
+            </div>
+            <div class="geobim-props">
+                <span class="geobim-prop-key">Tile</span>
+                <span class="geobim-prop-val">${b.tile_name}</span>
+                <span class="geobim-prop-key">Height</span>
+                <span class="geobim-prop-val">${b.height.toFixed(2)} m</span>
+                <span class="geobim-prop-key">Ground Elev.</span>
+                <span class="geobim-prop-val">${b.ground_elevation.toFixed(2)} m</span>
+                <span class="geobim-prop-key">Roof Elev.</span>
+                <span class="geobim-prop-val">${b.roof_elevation.toFixed(2)} m</span>
+                <span class="geobim-prop-key">Footprint</span>
+                <span class="geobim-prop-val">${b.footprint_area.toFixed(1)} m²</span>
+                <span class="geobim-prop-key">Vertices</span>
+                <span class="geobim-prop-val">${b.vertex_count.toLocaleString()}</span>
+                <span class="geobim-prop-key">Faces</span>
+                <span class="geobim-prop-val">${b.face_count.toLocaleString()}</span>
+                <span class="geobim-prop-key">Confidence</span>
+                <span class="geobim-prop-val">${(b.confidence * 100).toFixed(1)}%</span>
+                <span class="geobim-prop-key">Centroid</span>
+                <span class="geobim-prop-val">[${b.centroid.map(v => v.toFixed(1)).join(', ')}]</span>
+                <span class="geobim-prop-key">BBox Min</span>
+                <span class="geobim-prop-val">[${b.bbox_min.map(v => v.toFixed(1)).join(', ')}]</span>
+                <span class="geobim-prop-key">BBox Max</span>
+                <span class="geobim-prop-val">[${b.bbox_max.map(v => v.toFixed(1)).join(', ')}]</span>
+                ${b.roof_planes && b.roof_planes.length > 0 ? `
+                <span class="geobim-prop-key">Roof Planes</span>
+                <span class="geobim-prop-val">${b.roof_planes.length} plane(s)</span>
+                ${b.roof_planes.map((rp, i) => `
+                    <span class="geobim-prop-key" style="padding-left:12px">Plane ${i+1}</span>
+                    <span class="geobim-prop-val">tilt=${rp.tilt_deg.toFixed(1)}° az=${rp.azimuth_deg.toFixed(0)}° area=${rp.area.toFixed(1)}m²</span>
+                `).join('')}` : ''}
+                ${b.tags ? `
+                <span class="geobim-prop-key">Tags</span>
+                <span class="geobim-prop-val">${b.tags.join(', ')}</span>
+                ` : ''}
+            </div>
+        </div>
+    `;
+}
+
+// ── Measurement Tools ──────────────────────────────────────
+
+let _measureMode = null;
+
+function toggleMeasureToolbar() {
+    const tb = document.getElementById('measureToolbar');
+    if (!tb) return;
+    tb.classList.toggle('hidden');
+    const btn = document.getElementById('measureBtn');
+    if (btn) btn.classList.toggle('active', !tb.classList.contains('hidden'));
+
+    // If hiding, also clear mode
+    if (tb.classList.contains('hidden')) {
+        setMeasureMode(null);
+    }
+}
+
+function setMeasureMode(mode) {
+    _measureMode = mode;
+
+    // Update toolbar button states
+    document.querySelectorAll('.measure-btn[data-mode]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    // Set mode on scene viewer
+    if (window.sceneViewer) {
+        window.sceneViewer.setMeasureMode(mode);
+
+        // Wire measurement callback
+        if (mode) {
+            window.sceneViewer.onMeasure = (mType, result) => {
+                let msg = '';
+                if (mType === 'distance') msg = `📏 거리: ${result.distance.toFixed(2)}m`;
+                else if (mType === 'height') msg = `📐 높이: ${result.height.toFixed(2)}m`;
+                else if (mType === 'area') msg = `⬡ 면적: ${result.area.toFixed(2)}m²`;
+                if (msg) addChatMsg('system', msg);
+            };
+        }
+    }
+}
+
+function clearMeasurements() {
+    if (window.sceneViewer) {
+        window.sceneViewer.clearMeasurements();
+    }
+    setMeasureMode(null);
+    addChatMsg('system', '계측 결과 초기화됨');
+}
+
+// ── Measurement Export ─────────────────────────────────────
+
+let _measurementHistory = [];
+
+function recordMeasurement(type, result) {
+    _measurementHistory.push({
+        type,
+        value: result.distance || result.height || result.area || 0,
+        unit: type === 'area' ? 'm²' : 'm',
+        points: result.points ? result.points.map(p => [p.x, p.y, p.z]) : [],
+        timestamp: new Date().toISOString(),
+    });
+}
+
+async function exportMeasurements(fmt = 'json') {
+    if (_measurementHistory.length === 0) {
+        addChatMsg('system', '내보낼 계측 결과가 없습니다.');
+        return;
+    }
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/export/measurements`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                measurements: _measurementHistory,
+                output_path: `geobim_export/measurements.${fmt}`,
+                format: fmt,
+            }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        addChatMsg('system', `계측 결과 ${data.count}건 내보내기 완료: ${fmt.toUpperCase()}`);
+    } catch (e) {
+        addChatMsg('system', `계측 내보내기 실패: ${e.message}`);
+    }
+}
+
+// ── Full Pipeline ──────────────────────────────────────────
+
+async function geobimRunPipeline() {
+    let tileFolder = '';
+    let exportFolder = '';
+
+    try {
+        const infoResp = await fetch(`${API}/api/drone/project-info`);
+        if (infoResp.ok) {
+            const info = await infoResp.json();
+            tileFolder = info.tile_folder || info.source_path || '';
+        }
+    } catch(e) { /* ignore */ }
+
+    if (!tileFolder) {
+        const unityProject = window._unityProjectPath || 'C:/UnityProjects/My project';
+        tileFolder = `${unityProject}/Assets/CityTiles`;
+    }
+    exportFolder = tileFolder.replace(/\/Assets\/CityTiles.*/, '') + '/GeoBIM_Export';
+
+    addChatMsg('system', `GeoBIM 파이프라인 시작 (00~40)...\nTiles: ${tileFolder}\nExport: ${exportFolder}`);
+
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/pipeline/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tile_folder: tileFolder,
+                export_folder: exportFolder,
+                skip_collider: true,  // Skip Blender step if not available
+            }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+        // Poll pipeline status
+        await _pollPipelineStatus();
+    } catch (e) {
+        addChatMsg('system', `파이프라인 실패: ${e.message}`);
+    }
+}
+
+async function _pollPipelineStatus() {
+    const maxWait = 300;
+    const interval = 3000;
+    let elapsed = 0;
+
+    while (elapsed < maxWait * 1000) {
+        await new Promise(r => setTimeout(r, interval));
+        elapsed += interval;
+
+        try {
+            const resp = await fetch(`${API}/api/drone/geobim/pipeline/status`);
+            if (!resp.ok) break;
+            const s = await resp.json();
+
+            const stage = s.current_stage || 'done';
+            setFooterStatus(`Pipeline: ${stage} (${s.progress_pct}%)`);
+
+            if (!s.is_running) {
+                if (s.error) {
+                    addChatMsg('system', `파이프라인 오류: ${s.error}`);
+                } else {
+                    addChatMsg('system',
+                        `파이프라인 완료!\n건물: ${s.building_count}개\n콜라이더: ${s.collider_count}개\n` +
+                        `단계: ${s.stages_completed.join(' → ')}`
+                    );
+                    await _loadGeoBIMResults();
+                }
+                return;
+            }
+        } catch(e) { break; }
+    }
+}
+
+// ── NavMesh Path (Web Viewer) ──────────────────────────────
+
+let _navMode = null;
+let _navPoints = [];
+
+function toggleNavMode() {
+    if (_navMode) {
+        // Deactivate
+        _navMode = null;
+        _navPoints = [];
+        if (window.sceneViewer) {
+            window.sceneViewer.onNavClick = null;
+            window.sceneViewer.renderer.domElement.style.cursor = 'grab';
+        }
+        const btn = document.getElementById('navModeBtn');
+        if (btn) btn.classList.toggle('active', false);
+        addChatMsg('system', '동선 모드 종료');
+        return;
+    }
+
+    // Activate
+    _navMode = 'setStart';
+    _navPoints = [];
+    const btn = document.getElementById('navModeBtn');
+    if (btn) btn.classList.toggle('active', true);
+    addChatMsg('system', '동선 모드: 시작점을 클릭하세요');
+
+    if (window.sceneViewer) {
+        window.sceneViewer.setMeasureMode(null);
+        window.sceneViewer.renderer.domElement.style.cursor = 'crosshair';
+        window.sceneViewer.onNavClick = async (pt) => {
+            if (_navMode === 'setStart') {
+                _navPoints = [pt];
+                _navMode = 'setEnd';
+                addChatMsg('system', `시작점: [${pt.x.toFixed(1)}, ${pt.z.toFixed(1)}] — 종점을 클릭하세요`);
+            } else if (_navMode === 'setEnd') {
+                _navPoints.push(pt);
+                addChatMsg('system', `종점: [${pt.x.toFixed(1)}, ${pt.z.toFixed(1)}] — 경로 탐색 중...`);
+                window.sceneViewer.renderer.domElement.style.cursor = 'wait';
+                try {
+                    const resp = await fetch(`${API}/api/drone/geobim/pathfind`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            start: [_navPoints[0].x, _navPoints[0].z],
+                            end: [_navPoints[1].x, _navPoints[1].z],
+                            resolution: 1.0,
+                            agent_radius: 0.5,
+                        }),
+                    });
+                    const data = await resp.json();
+                    if (data.success && data.path.length > 0) {
+                        window.sceneViewer.renderNavPath(data.path);
+                        addChatMsg('system', `경로 발견: ${data.distance.toFixed(1)}m (${data.path.length} 포인트, ${data.elapsed_ms.toFixed(0)}ms)`);
+                    } else {
+                        addChatMsg('system', `경로 없음: ${data.error || '도달 불가'}`);
+                    }
+                } catch (e) {
+                    addChatMsg('system', `경로 탐색 실패: ${e.message}`);
+                }
+                // Reset for next path
+                _navMode = 'setStart';
+                _navPoints = [];
+                window.sceneViewer.renderer.domElement.style.cursor = 'crosshair';
+                addChatMsg('system', '다음 시작점을 클릭하거나 NavMesh 버튼으로 종료하세요');
+            }
+        };
+    }
+}
+
+// ── Visibility Analysis (Web) ──────────────────────────────
+
+async function runVisibilityAnalysis() {
+    const posStr = prompt('센서 위치 (x,y,z):', '0,3,0');
+    if (!posStr) return;
+    const parts = posStr.split(',').map(Number);
+    if (parts.length < 3 || parts.some(isNaN)) {
+        addChatMsg('system', '잘못된 좌표 형식입니다. x,y,z 형식으로 입력하세요.');
+        return;
+    }
+
+    const fovStr = prompt('수평 시야각 (도, 360=전방위):', '360');
+    const hfov = parseFloat(fovStr) || 360;
+    const distStr = prompt('최대 거리 (m):', '100');
+    const maxDist = parseFloat(distStr) || 100;
+    const yawStr = prompt('방향각 yaw (도, 0=East):', '0');
+    const yaw = parseFloat(yawStr) || 0;
+
+    addChatMsg('system', `가시성 분석 중...\n센서: [${parts.join(', ')}], FOV=${hfov}°, 거리=${maxDist}m`);
+
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/visibility`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sensors: [{
+                    position: parts,
+                    hfov: hfov,
+                    yaw: yaw,
+                    max_distance: maxDist,
+                    height: parts[1] || 3.0,
+                }],
+                grid_resolution: 2.0,
+            }),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            addChatMsg('system', `가시성 분석 실패: ${data.error}`);
+            return;
+        }
+
+        // Render heatmap in 3D viewer
+        if (window.sceneViewer) {
+            window.sceneViewer.renderVisibilityHeatmap(data.heatmap, data.grid_resolution);
+            window.sceneViewer.renderSensorMarkers(data.sensors);
+        }
+
+        const pct = (data.coverage_ratio * 100).toFixed(1);
+        addChatMsg('system',
+            `가시성 분석 완료 (${data.elapsed_ms.toFixed(0)}ms)\n` +
+            `커버리지: ${pct}% (${data.visible_cells}/${data.total_cells} 셀)\n` +
+            `사각지대: ${data.blind_cells} 셀\n` +
+            `히트맵 해상도: ${data.grid_resolution}m`
+        );
+    } catch (e) {
+        addChatMsg('system', `가시성 분석 오류: ${e.message}`);
+    }
+}
+
+function clearVisibility() {
+    if (window.sceneViewer) {
+        window.sceneViewer.clearVisibilityHeatmap();
+        addChatMsg('system', '가시성 히트맵 제거됨');
+    }
+}
+
+// ── Accessibility Analysis (Section 4.7) ───────────────────
+
+async function runAccessibilityAnalysis() {
+    const posStr = prompt('시작점 (x,z):', '0,0');
+    if (!posStr) return;
+    const parts = posStr.split(',').map(Number);
+    if (parts.length < 2 || parts.some(isNaN)) {
+        addChatMsg('system', '잘못된 좌표 형식입니다. x,z 형식으로 입력하세요.');
+        return;
+    }
+
+    const timeStr = prompt('최대 이동 시간 (초):', '300');
+    const maxTime = parseFloat(timeStr) || 300;
+    const speedStr = prompt('이동 속도 (m/s, 보행=1.4):', '1.4');
+    const speed = parseFloat(speedStr) || 1.4;
+
+    addChatMsg('system', `접근성 분석 중...\n시작: [${parts.join(', ')}], 시간=${maxTime}s, 속도=${speed}m/s`);
+
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/accessibility`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                start: parts.slice(0, 2),
+                max_time: maxTime,
+                speed: speed,
+                resolution: 1.0,
+            }),
+        });
+        const data = await resp.json();
+
+        if (!data.success) {
+            addChatMsg('system', `접근성 분석 실패: ${data.error || '알 수 없는 오류'}`);
+            return;
+        }
+
+        // Render on 3D viewer
+        if (window.sceneViewer) {
+            window.sceneViewer.renderAccessibilityHeatmap(data.reachable_cells, 1.0, maxTime);
+        }
+
+        addChatMsg('system',
+            `접근성 분석 완료 (${data.elapsed_ms.toFixed(0)}ms)\n` +
+            `도달 가능 면적: ${data.reachable_area_m2.toFixed(0)}m² (${data.cell_count} 셀)\n` +
+            `최대 이동 거리: ${data.max_distance_m.toFixed(0)}m\n` +
+            `이동 시간: ${maxTime}s, 속도: ${speed}m/s`
+        );
+    } catch (e) {
+        addChatMsg('system', `접근성 분석 오류: ${e.message}`);
+    }
+}
+
+// ── Per-Building Coverage Report (Section 4.8) ─────────────
+
+async function runCoverageReport() {
+    const posStr = prompt('센서 위치 (x,y,z):', '0,5,0');
+    if (!posStr) return;
+    const parts = posStr.split(',').map(Number);
+    if (parts.length < 3 || parts.some(isNaN)) {
+        addChatMsg('system', '잘못된 좌표 형식입니다.');
+        return;
+    }
+
+    addChatMsg('system', '건물별 커버리지 리포트 생성 중...');
+
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/visibility/coverage-report`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sensors: [{ position: parts, hfov: 360, max_distance: 100, height: parts[1] }],
+                grid_resolution: 2.0,
+            }),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            addChatMsg('system', `리포트 실패: ${data.error}`);
+            return;
+        }
+
+        let report = `건물별 커버리지 리포트 (${data.building_count}개 건물)\n`;
+        report += `전체 커버리지: ${(data.overall_coverage * 100).toFixed(1)}%\n`;
+        report += `평균 건물 커버리지: ${(data.avg_coverage * 100).toFixed(1)}%\n`;
+        report += `\n--- 사각지대 취약 건물 (하위 5개) ---\n`;
+
+        const worst = data.buildings.slice(0, 5);
+        worst.forEach((b, i) => {
+            report += `${i+1}. ${b.label}: ${(b.coverage_ratio * 100).toFixed(1)}% (blind=${b.blind_cells} cells)\n`;
+        });
+
+        addChatMsg('system', report);
+    } catch (e) {
+        addChatMsg('system', `리포트 오류: ${e.message}`);
+    }
+}
+
+// ── HITL Review Queue (Section 3.3.3) ──────────────────────
+
+async function populateReviewQueue() {
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/review/populate`, { method: 'POST' });
+        const data = await resp.json();
+        addChatMsg('system', `검수 큐 생성: ${data.count}개 (신뢰도 < ${data.threshold})`);
+        await loadReviewQueue();
+    } catch (e) {
+        addChatMsg('system', `검수 큐 오류: ${e.message}`);
+    }
+}
+
+async function loadReviewQueue() {
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/review/queue?status=pending&limit=50`);
+        const data = await resp.json();
+        _renderReviewQueue(data.items || []);
+    } catch (e) {
+        console.error('[HITL] Load failed:', e);
+    }
+}
+
+function _renderReviewQueue(items) {
+    const listEl = document.getElementById('reviewQueueList');
+    if (!listEl) return;
+
+    if (items.length === 0) {
+        listEl.innerHTML = '<div class="empty-state"><p>검수 대기 항목 없음</p></div>';
+        return;
+    }
+
+    listEl.innerHTML = items.map(item => `
+        <div class="review-item" data-id="${item.building_id}">
+            <div class="review-item-info">
+                <span class="review-item-label">${item.label || item.building_id}</span>
+                <span class="review-item-meta">${(item.confidence * 100).toFixed(0)}% | ${(item.height_max || 0).toFixed(1)}m | ${(item.area_2d || 0).toFixed(0)}m²</span>
+            </div>
+            <div class="review-item-actions">
+                <button class="review-btn confirm" onclick="reviewDecide('${item.building_id}','building')" title="건물 확인">✓</button>
+                <button class="review-btn reject" onclick="reviewDecide('${item.building_id}','not_building')" title="비건물 제거">✗</button>
+                <button class="review-btn skip" onclick="reviewDecide('${item.building_id}','skip')" title="건너뛰기">→</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function reviewDecide(buildingId, decision) {
+    try {
+        const resp = await fetch(`${API}/api/drone/geobim/review/decide`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ building_id: buildingId, decision }),
+        });
+        if (resp.ok) {
+            // Remove from UI
+            const el = document.querySelector(`.review-item[data-id="${buildingId}"]`);
+            if (el) el.remove();
+            const labels = { building: '건물 확인', not_building: '비건물 제거', skip: '건너뛰기' };
+            addChatMsg('system', `[HITL] ${buildingId}: ${labels[decision] || decision}`);
+        }
+    } catch (e) {
+        addChatMsg('system', `검수 결정 오류: ${e.message}`);
+    }
+}
+
+// ── Wire measurement recording to viewer callback ──────────
+
+(function _wireMeasureRecording() {
+    const origSetMeasureMode = window.setMeasureMode;
+    if (!origSetMeasureMode) return;
+
+    // Patch: record measurements when onMeasure fires
+    const _checkViewer = setInterval(() => {
+        if (window.sceneViewer && window.sceneViewer.onMeasure === null) {
+            // Default recording callback
+        }
+        if (window.sceneViewer) {
+            const existingCb = window.sceneViewer.onMeasure;
+            window.sceneViewer.onMeasure = (mType, result) => {
+                recordMeasurement(mType, result);
+                if (existingCb) existingCb(mType, result);
+
+                let msg = '';
+                if (mType === 'distance') msg = `📏 거리: ${result.distance.toFixed(2)}m`;
+                else if (mType === 'height') msg = `📐 높이: ${result.height.toFixed(2)}m`;
+                else if (mType === 'area') msg = `⬡ 면적: ${result.area.toFixed(2)}m²`;
+                if (msg) addChatMsg('system', msg);
+            };
+            clearInterval(_checkViewer);
+        }
+    }, 2000);
+})();
+
+// ═══════════════════════════════════════════════════════════════
+// Mesh Edit — unified step-based UI (replaces Tile Edit + Wizard)
+// ═══════════════════════════════════════════════════════════════
+
+let _mesheditStep = 1;
+let _mesheditTiles = [];
+let _mesheditSelectedTile = null;
+let _mesheditSelectedPreset = null;
+let _mesheditJobId = null;
+let _mesheditPolling = null;
+let _mesheditScanResult = null;
+
+const _MESHEDIT_PRESETS = {
+    clean_noise: { min_fragment_area: 0.5, remove_degenerate: true },
+    decimate_to_target: { target_triangles: 100000, preserve_boundaries: true },
+    generate_lods: { lod_ratios: '1.0, 0.4, 0.15', export_format: 'fbx' },
+    generate_collider_proxy: { target_triangles: 50000, min_fragment_area: 1.0 },
+    pack_for_unity: { target_triangles_lod0: 600000, collider_target_triangles: 50000, min_fragment_area: 0.5 },
+};
+
+// ── Step management ──────────────────────────────────────────
+
+function mesheditSetStep(n) {
+    _mesheditStep = n;
+    // Update stepper circles
+    document.querySelectorAll('.meshedit-step').forEach(el => {
+        const s = parseInt(el.dataset.step);
+        el.classList.remove('active', 'done');
+        if (s === n) el.classList.add('active');
+        else if (s < n) el.classList.add('done');
+    });
+    // Show/hide step bodies
+    for (let i = 1; i <= 5; i++) {
+        const body = document.getElementById(`mesheditStep${i}`);
+        if (body) body.classList.toggle('active', i === n);
+    }
+}
+
+function mesheditGoStep(n) {
+    // Only allow going back or to current step, unless step is unlocked
+    if (n > _mesheditStep && n !== _mesheditStep + 1) return;
+    if (n === 2 && !_mesheditTiles.length) return;
+    if (n === 3 && !_mesheditSelectedTile) return;
+    mesheditSetStep(n);
+}
+
+// ── Init (auto-load on tab switch) ───────────────────────────
+
+async function mesheditInit() {
+    const statusEl = document.getElementById('mesheditAutoLoadStatus');
+    if (statusEl) statusEl.textContent = 'Loading tiles...';
+    try {
+        const resp = await fetch(`${API}/api/drone/tiles`);
+        if (!resp.ok) throw new Error('Failed to load tiles');
+        const data = await resp.json();
+        _mesheditTiles = data.tiles || data || [];
+        if (_mesheditTiles.length) {
+            if (statusEl) statusEl.textContent = `${_mesheditTiles.length} tiles loaded`;
+            // Show quick stats
+            const statsEl = document.getElementById('mesheditStats');
+            if (statsEl) {
+                const totalTris = _mesheditTiles.reduce((s, t) => s + (t.triangles || 0), 0);
+                const totalSize = _mesheditTiles.reduce((s, t) => s + (t.size_mb || 0), 0);
+                statsEl.innerHTML = `
+                    <div class="meshedit-stat-card"><div class="meshedit-stat-value">${_mesheditTiles.length}</div><div class="meshedit-stat-label">Tiles</div></div>
+                    <div class="meshedit-stat-card"><div class="meshedit-stat-value">${totalTris > 0 ? (totalTris/1e6).toFixed(1) + 'M' : '—'}</div><div class="meshedit-stat-label">Total Tris</div></div>
+                `;
+                statsEl.style.display = '';
+            }
+            // Populate tile list in step 2
+            _mesheditRenderTileList();
+            // Auto-advance to step 2
+            setTimeout(() => mesheditSetStep(2), 300);
+        } else {
+            if (statusEl) statusEl.textContent = 'No tiles in project. Use "Manual Folder Scan" below.';
+        }
+    } catch (e) {
+        if (statusEl) statusEl.textContent = `Load error: ${e.message}`;
+    }
+}
+
+// ── Manual folder scan ───────────────────────────────────────
+
+async function mesheditScanFolder() {
+    const folder = document.getElementById('mesheditFolderPath')?.value?.trim();
+    if (!folder) { addChatMsg('system', 'Enter a folder path'); return; }
+
+    const statusEl = document.getElementById('mesheditAutoLoadStatus');
+    if (statusEl) statusEl.textContent = 'Scanning folder...';
+
+    try {
+        const res = await fetch('/api/wizard/scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ folder_path: folder }),
+        });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Scan failed'); }
+        const data = await res.json();
+        _mesheditScanResult = data;
+
+        // Show stats
+        const fmtNum = n => n?.toLocaleString() ?? '0';
+        const statsEl = document.getElementById('mesheditStats');
+        if (statsEl) {
+            statsEl.innerHTML = `
+                <div class="meshedit-stat-card"><div class="meshedit-stat-value">${fmtNum(data.tile_count)}</div><div class="meshedit-stat-label">Tiles</div></div>
+                <div class="meshedit-stat-card"><div class="meshedit-stat-value">${fmtNum(data.total_faces)}</div><div class="meshedit-stat-label">Total Faces</div></div>
+                <div class="meshedit-stat-card"><div class="meshedit-stat-value">${data.total_size_mb?.toFixed(1)} MB</div><div class="meshedit-stat-label">Total Size</div></div>
+                <div class="meshedit-stat-card"><div class="meshedit-stat-value">${data.estimated_memory_mb?.toFixed(0)} MB</div><div class="meshedit-stat-label">Est. Memory</div></div>
+            `;
+            statsEl.style.display = '';
+        }
+
+        // Show issues
+        const issuesEl = document.getElementById('mesheditIssues');
+        if (issuesEl && data.issues?.length) {
+            issuesEl.innerHTML = data.issues.map(i =>
+                `<div class="meshedit-issue ${i.severity}"><strong>[${i.code}]</strong> ${i.message}</div>`
+            ).join('');
+            issuesEl.style.display = '';
+        }
+
+        // Show recommendation
+        const recEl = document.getElementById('mesheditRecommend');
+        if (recEl && data.recommended_preset) {
+            const params = data.recommended_params || {};
+            recEl.innerHTML = `<div class="meshedit-recommend">
+                <div class="meshedit-recommend-preset">${data.recommended_preset.replace(/_/g, ' ').toUpperCase()}</div>
+                <div class="meshedit-recommend-mode">Mode: ${params.mode || 'balanced'}</div>
+                <div class="meshedit-recommend-reason">${params.reason || ''}</div>
+            </div>`;
+            recEl.style.display = '';
+        }
+
+        // Populate tiles
+        if (data.tiles?.length) {
+            _mesheditTiles = data.tiles.map(t => ({
+                name: t.tile_id,
+                tile_id: t.tile_id,
+                triangles: t.faces || 0,
+                size_mb: t.file_size_mb || 0,
+            }));
+            _mesheditRenderTileList();
+        }
+
+        if (statusEl) statusEl.textContent = `Scan complete: ${data.tile_count} tiles`;
+        addChatMsg('system', `Scan complete: ${data.tile_count} tiles, ${fmtNum(data.total_faces)} faces`);
+
+        // Auto-advance to step 2 after scan
+        if (_mesheditTiles.length) setTimeout(() => mesheditSetStep(2), 500);
+    } catch (e) {
+        if (statusEl) statusEl.textContent = `Scan error: ${e.message}`;
+        addChatMsg('system', `Scan error: ${e.message}`);
+    }
+}
+
+// ── Tile list rendering ──────────────────────────────────────
+
+function _mesheditRenderTileList() {
+    const list = document.getElementById('mesheditTileList');
+    if (!list || !_mesheditTiles.length) return;
+    list.innerHTML = _mesheditTiles.map(t => {
+        const name = t.name || t.tile_id || t;
+        const tris = t.triangles ? `${(t.triangles/1000).toFixed(0)}k` : '';
+        const size = t.size_mb ? `${t.size_mb.toFixed(1)}MB` : '';
+        return `<div class="meshedit-tile-item" onclick="mesheditSelectTile('${name}')" data-tile="${name}">
+            <span class="tile-name">${name}</span>
+            <span class="tile-tris">${tris}</span>
+            <span class="tile-size">${size}</span>
+        </div>`;
+    }).join('');
+}
+
+function mesheditFilterTiles(query) {
+    const items = document.querySelectorAll('.meshedit-tile-item');
+    const q = query.toLowerCase();
+    items.forEach(el => {
+        const name = (el.dataset.tile || '').toLowerCase();
+        el.style.display = name.includes(q) ? '' : 'none';
+    });
+}
+
+// ── Tile selection ───────────────────────────────────────────
+
+function mesheditSelectTile(tileId) {
+    _mesheditSelectedTile = tileId;
+    document.querySelectorAll('.meshedit-tile-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.tile === tileId);
+    });
+    // Highlight in 3D viewer
+    if (window.sceneViewer && window.sceneViewer.highlightTile) {
+        window.sceneViewer.highlightTile(tileId);
+    }
+    // Advance to step 3 (preset selection)
+    mesheditSetStep(3);
+    // Pre-select recommended preset if available
+    if (_mesheditScanResult?.recommended_preset && !_mesheditSelectedPreset) {
+        mesheditSelectPreset(_mesheditScanResult.recommended_preset);
+    }
+}
+
+// ── Preset selection ─────────────────────────────────────────
+
+function mesheditSelectPreset(preset) {
+    _mesheditSelectedPreset = preset;
+    // Highlight selected card
+    document.querySelectorAll('.meshedit-preset-card').forEach(el => {
+        el.classList.toggle('selected', el.getAttribute('onclick')?.includes(`'${preset}'`));
+    });
+    // Enable start button
+    const btn = document.getElementById('mesheditStartBtn');
+    if (btn) btn.disabled = false;
+    // Show/populate advanced params
+    const paramsDetails = document.getElementById('mesheditParamsDetails');
+    if (paramsDetails) paramsDetails.style.display = '';
+    const container = document.getElementById('mesheditParams');
+    if (container) {
+        const params = _MESHEDIT_PRESETS[preset] || {};
+        container.innerHTML = Object.entries(params).map(([key, val]) => {
+            const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            return `<div class="meshedit-param-row">
+                <span class="meshedit-param-label">${label}</span>
+                <input class="meshedit-param-input" data-param="${key}" value="${val}">
+            </div>`;
+        }).join('');
+    }
+}
+
+function _mesheditGetParams() {
+    const params = {};
+    document.querySelectorAll('#mesheditParams .meshedit-param-input').forEach(inp => {
+        const key = inp.dataset.param;
+        let val = inp.value;
+        if (val === 'true') val = true;
+        else if (val === 'false') val = false;
+        else if (!isNaN(val) && val !== '') val = parseFloat(val);
+        params[key] = val;
+    });
+    return params;
+}
+
+// ── Start job ────────────────────────────────────────────────
+
+async function mesheditStart() {
+    if (!_mesheditSelectedTile) { addChatMsg('system', 'Select a tile first'); return; }
+    if (!_mesheditSelectedPreset) { addChatMsg('system', 'Select a preset first'); return; }
+
+    const params = _mesheditGetParams();
+    const btn = document.getElementById('mesheditStartBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
+
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tile_id: _mesheditSelectedTile,
+                preset: _mesheditSelectedPreset,
+                project_dir: '',
+                params: params,
+            }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Failed to start job');
+
+        _mesheditJobId = data.job_id;
+        addChatMsg('system', `Mesh Edit started: ${data.job_id} (${_mesheditSelectedPreset})`);
+
+        // Clear log and advance to step 4
+        const logEl = document.getElementById('mesheditLog');
+        if (logEl) logEl.innerHTML = '';
+        _mesheditAppendLog(`Job started: ${data.job_id} (${_mesheditSelectedPreset})`);
+        mesheditSetStep(4);
+
+        // Start polling
+        _mesheditStartPolling();
+    } catch (e) {
+        addChatMsg('system', `Mesh Edit error: ${e.message}`);
+        if (btn) { btn.disabled = false; btn.textContent = 'Start Edit Job'; }
+    }
+}
+
+// ── Polling ──────────────────────────────────────────────────
+
+function _mesheditStartPolling() {
+    if (_mesheditPolling) clearInterval(_mesheditPolling);
+    _mesheditPolling = setInterval(async () => {
+        if (!_mesheditJobId) { clearInterval(_mesheditPolling); return; }
+        try {
+            const resp = await fetch(`${API}/api/mesh/edit/status/${_mesheditJobId}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            _mesheditUpdateProgress(data);
+
+            if (data.status === 'preview_ready' || data.status === 'completed' ||
+                data.status === 'failed' || data.status === 'cancelled') {
+                clearInterval(_mesheditPolling);
+                _mesheditPolling = null;
+                if (data.status === 'preview_ready') _mesheditLoadPreview();
+                if (data.status === 'failed') {
+                    addChatMsg('system', `Mesh Edit failed: ${data.error || 'unknown'}`);
+                    _mesheditAppendLog(data.error || 'Job failed', 'error');
+                }
+            }
+        } catch (e) { /* ignore polling errors */ }
+    }, 2000);
+}
+
+function _mesheditUpdateProgress(data) {
+    const stageEl = document.getElementById('mesheditStage');
+    const fillEl = document.getElementById('mesheditProgressFill');
+    const pctEl = document.getElementById('mesheditProgressPct');
+    const stage = (data.stage || 'queued').replace(/_/g, ' ').toUpperCase();
+    if (stageEl) stageEl.textContent = stage;
+    if (fillEl) fillEl.style.width = `${data.progress_pct || 0}%`;
+    if (pctEl) pctEl.textContent = `${Math.round(data.progress_pct || 0)}%`;
+    _mesheditAppendLog(`Stage: ${stage} (${Math.round(data.progress_pct || 0)}%)`);
+}
+
+// ── Preview / Results ────────────────────────────────────────
+
+async function _mesheditLoadPreview() {
+    if (!_mesheditJobId) return;
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/preview/${_mesheditJobId}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const container = document.getElementById('mesheditComparison');
+        if (container) {
+            const fmtNum = n => n >= 1000 ? `${(n/1000).toFixed(1)}k` : n;
+            container.innerHTML = `
+                <div class="meshedit-compare-card before">
+                    <span class="stat-label">Before (Tris)</span>
+                    <span class="stat-value">${fmtNum(data.original?.triangles || 0)}</span>
+                </div>
+                <div class="meshedit-compare-card after">
+                    <span class="stat-label">After (Tris)</span>
+                    <span class="stat-value">${fmtNum(data.result?.triangles || 0)}</span>
+                </div>
+                <div class="meshedit-compare-card before">
+                    <span class="stat-label">Before (Verts)</span>
+                    <span class="stat-value">${fmtNum(data.original?.vertices || 0)}</span>
+                </div>
+                <div class="meshedit-compare-card after">
+                    <span class="stat-label">After (Verts)</span>
+                    <span class="stat-value">${fmtNum(data.result?.vertices || 0)}</span>
+                </div>
+                ${data.lod0_triangles ? `
+                <div class="meshedit-compare-card after">
+                    <span class="stat-label">LOD0</span>
+                    <span class="stat-value">${fmtNum(data.lod0_triangles)}</span>
+                </div>
+                <div class="meshedit-compare-card after">
+                    <span class="stat-label">LOD1 / LOD2</span>
+                    <span class="stat-value">${fmtNum(data.lod1_triangles || 0)} / ${fmtNum(data.lod2_triangles || 0)}</span>
+                </div>` : ''}
+                ${data.collider_triangles ? `
+                <div class="meshedit-compare-card after" style="grid-column:span 2">
+                    <span class="stat-label">Collider</span>
+                    <span class="stat-value">${fmtNum(data.collider_triangles)} tris</span>
+                </div>` : ''}
+            `;
+        }
+
+        // Show warnings
+        const warnEl = document.getElementById('mesheditWarnings');
+        if (warnEl && data.warnings?.length) {
+            warnEl.style.display = '';
+            warnEl.innerHTML = data.warnings.map(w => `&#9888; ${w}`).join('<br>');
+            data.warnings.forEach(w => _mesheditAppendLog(w, 'warning'));
+        } else if (warnEl) {
+            warnEl.style.display = 'none';
+        }
+
+        _mesheditAppendLog(`Preview ready (${data.duration_s}s)`);
+        addChatMsg('system', `Mesh Edit preview ready (${data.duration_s}s) — review before/after stats`);
+
+        // Advance to step 5 (results)
+        mesheditSetStep(5);
+        // Load history for this tile
+        mesheditLoadHistory();
+    } catch (e) {
+        addChatMsg('system', `Preview error: ${e.message}`);
+    }
+}
+
+// ── Apply / Cancel ───────────────────────────────────────────
+
+async function mesheditApply() {
+    if (!_mesheditJobId) return;
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/apply/${_mesheditJobId}`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Apply failed');
+        addChatMsg('system', `Mesh Edit applied: v${data.version} for ${data.tile_id}`);
+        mesheditLoadHistory();
+    } catch (e) {
+        addChatMsg('system', `Apply error: ${e.message}`);
+    }
+}
+
+async function mesheditCancel() {
+    if (_mesheditJobId) {
+        try {
+            await fetch(`${API}/api/mesh/edit/cancel/${_mesheditJobId}`, { method: 'POST' });
+            addChatMsg('system', 'Mesh Edit cancelled');
+        } catch (e) { /* ignore */ }
+    }
+    _mesheditJobId = null;
+    if (_mesheditPolling) { clearInterval(_mesheditPolling); _mesheditPolling = null; }
+    // Reset start button
+    const btn = document.getElementById('mesheditStartBtn');
+    if (btn) { btn.disabled = !_mesheditSelectedPreset; btn.textContent = 'Start Edit Job'; }
+    // Go back to step 3
+    mesheditSetStep(3);
+}
+
+function mesheditReset() {
+    _mesheditJobId = null;
+    _mesheditSelectedTile = null;
+    _mesheditSelectedPreset = null;
+    if (_mesheditPolling) { clearInterval(_mesheditPolling); _mesheditPolling = null; }
+    // Deselect UI
+    document.querySelectorAll('.meshedit-tile-item').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.meshedit-preset-card').forEach(el => el.classList.remove('selected'));
+    const btn = document.getElementById('mesheditStartBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Start Edit Job'; }
+    const fillEl = document.getElementById('mesheditProgressFill');
+    if (fillEl) fillEl.style.width = '0%';
+    mesheditSetStep(2);
+}
+
+// ── History / Rollback ───────────────────────────────────────
+
+async function mesheditLoadHistory() {
+    const container = document.getElementById('mesheditHistory');
+    if (!container) return;
+
+    let items = [];
+    if (_mesheditSelectedTile) {
+        try {
+            const resp = await fetch(`${API}/api/mesh/edit/versions/${_mesheditSelectedTile}`);
+            if (resp.ok) items = await resp.json();
+        } catch (e) { /* fallback */ }
+    }
+    if (!items.length) {
+        const tileParam = _mesheditSelectedTile ? `?tile_id=${_mesheditSelectedTile}&limit=20` : '?limit=20';
+        try {
+            const resp = await fetch(`${API}/api/mesh/edit/history${tileParam}`);
+            if (resp.ok) items = await resp.json();
+        } catch (e) { /* ignore */ }
+    }
+
+    if (!items.length) {
+        container.innerHTML = '<div class="empty-state"><p>No edits yet</p></div>';
+        return;
+    }
+    container.innerHTML = items.map(h => {
+        const date = h.completed_at ? new Date(h.completed_at * 1000).toLocaleString() : '';
+        const tileId = h.tile_id || _mesheditSelectedTile || '';
+        const canRollback = h.status === 'completed' || h.status === 'preview_ready';
+        return `<div class="meshedit-history-item">
+            <span class="meshedit-version-badge">v${h.version}</span>
+            <span class="hist-preset">${(h.preset || '').replace(/_/g, ' ')}</span>
+            <span class="hist-time">${date}</span>
+            ${canRollback ? `<button class="hist-rollback" onclick="mesheditRollback('${tileId}',${h.version})" title="Rollback to this version">&#8617;</button>` : ''}
+        </div>`;
+    }).join('');
+}
+
+async function mesheditRollback(tileId, version) {
+    if (!confirm(`Rollback ${tileId} to v${version}?`)) return;
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/rollback/${tileId}/${version}?project_dir=`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Rollback failed');
+        addChatMsg('system', `Rolled back ${tileId} to v${version}`);
+        mesheditLoadHistory();
+    } catch (e) {
+        addChatMsg('system', `Rollback error: ${e.message}`);
+    }
+}
+
+async function mesheditRollbackToRaw() {
+    if (!_mesheditSelectedTile) return;
+    if (!confirm(`Revert ${_mesheditSelectedTile} to raw (original) tile?`)) return;
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/rollback/${_mesheditSelectedTile}/0?project_dir=`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Revert failed');
+        addChatMsg('system', `Reverted ${_mesheditSelectedTile} to raw`);
+        mesheditLoadHistory();
+    } catch (e) {
+        addChatMsg('system', `Revert error: ${e.message}`);
+    }
+}
+
+// ── Validate / Report ────────────────────────────────────────
+
+async function mesheditValidate() {
+    if (!_mesheditSelectedTile) { addChatMsg('system', 'Select a tile first'); return; }
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/validate/${_mesheditSelectedTile}?project_dir=`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const valEl = document.getElementById('mesheditValidation');
+        if (valEl) {
+            valEl.style.display = '';
+            valEl.className = `meshedit-validation ${data.valid ? 'valid' : 'invalid'}`;
+            let html = `<b>${data.valid ? 'Valid' : 'Issues Found'}</b> (${data.format}, ${(data.size_bytes/1e6).toFixed(1)}MB)`;
+            if (data.issues?.length) {
+                html += '<br>' + data.issues.map(i => `[${i.severity}] ${i.message}`).join('<br>');
+            }
+            valEl.innerHTML = html;
+        }
+    } catch (e) {
+        addChatMsg('system', `Validation error: ${e.message}`);
+    }
+}
+
+async function mesheditReport() {
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/report?project_dir=`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        let msg = `Quality Report: ${data.tile_count} tiles, ${data.total_jobs} jobs`;
+        msg += ` (${data.completed} completed, ${data.failed} failed, ${data.success_rate}% success)`;
+        if (data.tiles?.length) {
+            msg += '\n' + data.tiles.map(t =>
+                `  ${t.tile_id}: v${t.latest_version} active=${t.active_version} ` +
+                `${t.original_tris}→${t.result_tris} tris (${t.reduction_pct}% reduction)`
+            ).join('\n');
+        }
+        addChatMsg('system', msg);
+    } catch (e) {
+        addChatMsg('system', `Report error: ${e.message}`);
+    }
+}
+
+// ── Log helper ───────────────────────────────────────────────
+
+function _mesheditAppendLog(msg, level = '') {
+    const log = document.getElementById('mesheditLog');
+    if (!log) return;
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${level ? 'log-' + level : ''}`;
+    entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    log.appendChild(entry);
+    log.scrollTop = log.scrollHeight;
+}
+
+// ── WebSocket handler ────────────────────────────────────────
+
+function mesheditHandleWS(event, data) {
+    if (event === 'mesh_edit_progress' && data.job_id === _mesheditJobId) {
+        _mesheditUpdateProgress(data);
+    }
+    if (event === 'mesh_edit_preview_ready' && data.job_id === _mesheditJobId) {
+        if (_mesheditPolling) { clearInterval(_mesheditPolling); _mesheditPolling = null; }
+        _mesheditLoadPreview();
+    }
+    if (event === 'mesh_edit_applied') {
+        addChatMsg('system', `Mesh Edit applied: v${data.version} for ${data.tile_id}`);
+        mesheditLoadHistory();
+    }
+    if (event === 'mesh_edit_failed' && data.job_id === _mesheditJobId) {
+        addChatMsg('system', `Mesh Edit failed: ${data.error}`);
+        _mesheditAppendLog(data.error || 'Job failed', 'error');
+    }
+}
+
+// ── Version comparison ───────────────────────────────────────
+
+async function mesheditCompare(tileId, v1, v2) {
+    try {
+        const resp = await fetch(`${API}/api/mesh/edit/compare/${tileId}?v1=${v1}&v2=${v2}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const fmtNum = n => n >= 1000 ? `${(n/1000).toFixed(1)}k` : n;
+        addChatMsg('system',
+            `Version Compare (${tileId}): v${data.v1.version} vs v${data.v2.version}\n` +
+            `  Triangles: ${fmtNum(data.v1.result.triangles)} → ${fmtNum(data.v2.result.triangles)} (${data.diff.triangles > 0 ? '+' : ''}${fmtNum(data.diff.triangles)})\n` +
+            `  Collider: ${fmtNum(data.v1.collider)} → ${fmtNum(data.v2.collider)} (${data.diff.collider > 0 ? '+' : ''}${fmtNum(data.diff.collider)})`
+        );
+    } catch (e) { /* ignore */ }
+}
+
+// ── Bookmarks ───────────────────────────────────────────────
+
+async function bookmarkSaveCurrent() {
+    // Get camera state from 3D viewer
+    let camPos = [0, 0, 0], camTarget = [0, 0, 0], camZoom = 1;
+    if (window._sceneViewer && window._sceneViewer.camera) {
+        const cam = window._sceneViewer.camera;
+        camPos = [cam.position.x, cam.position.y, cam.position.z];
+        if (window._sceneViewer.controls && window._sceneViewer.controls.target) {
+            const t = window._sceneViewer.controls.target;
+            camTarget = [t.x, t.y, t.z];
+        }
+        camZoom = cam.zoom || 1;
+    }
+
+    const name = prompt('Bookmark name:', `View ${new Date().toLocaleTimeString()}`);
+    if (!name) return;
+
+    try {
+        const res = await fetch('/api/bookmarks/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                name,
+                category: 'general',
+                camera_position: camPos,
+                camera_target: camTarget,
+                camera_zoom: camZoom,
+            }),
+        });
+        if (!res.ok) throw new Error('Failed to save');
+        addChatMsg('system', `Bookmark saved: ${name}`);
+        bookmarkLoadAll();
+    } catch (e) {
+        addChatMsg('system', `Bookmark save error: ${e.message}`);
+    }
+}
+
+async function bookmarkLoadAll() {
+    const filter = document.getElementById('bookmarkFilter')?.value || '';
+    const url = filter ? `/api/bookmarks/?category=${filter}` : '/api/bookmarks/';
+
+    try {
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        const list = document.getElementById('bookmarkList');
+        if (!data.bookmarks.length) {
+            list.innerHTML = '<div class="empty-state"><p>No bookmarks yet</p></div>';
+            return;
+        }
+
+        list.innerHTML = data.bookmarks.map(b => {
+            const time = new Date(b.created_at * 1000).toLocaleString();
+            const pos = b.camera_position.map(v => v.toFixed(1)).join(', ');
+            return `<div class="bookmark-item" onclick="bookmarkRestore('${b.bookmark_id}')">
+                <div class="bookmark-item-header">
+                    <span class="bookmark-item-name">${b.name}</span>
+                    <span class="bookmark-item-cat">${b.category}</span>
+                </div>
+                <div class="bookmark-item-meta">${time} · pos(${pos})</div>
+                <div class="bookmark-item-actions" onclick="event.stopPropagation()">
+                    <button onclick="bookmarkRestore('${b.bookmark_id}')">Restore</button>
+                    <button class="bookmark-del" onclick="bookmarkDelete('${b.bookmark_id}')">Delete</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) { /* ignore */ }
+}
+
+async function bookmarkRestore(id) {
+    try {
+        const res = await fetch(`/api/bookmarks/${id}`);
+        if (!res.ok) throw new Error('Not found');
+        const bm = await res.json();
+
+        // Restore camera position in 3D viewer
+        if (window._sceneViewer && window._sceneViewer.camera) {
+            const cam = window._sceneViewer.camera;
+            cam.position.set(bm.camera_position[0], bm.camera_position[1], bm.camera_position[2]);
+            if (window._sceneViewer.controls && window._sceneViewer.controls.target) {
+                window._sceneViewer.controls.target.set(
+                    bm.camera_target[0], bm.camera_target[1], bm.camera_target[2]
+                );
+                window._sceneViewer.controls.update();
+            }
+        }
+        addChatMsg('system', `Restored bookmark: ${bm.name}`);
+    } catch (e) {
+        addChatMsg('system', `Restore error: ${e.message}`);
+    }
+}
+
+async function bookmarkDelete(id) {
+    if (!confirm('Delete this bookmark?')) return;
+    try {
+        await fetch(`/api/bookmarks/${id}`, { method: 'DELETE' });
+        bookmarkLoadAll();
+    } catch (e) { /* ignore */ }
+}
+
+// ── Annotations ─────────────────────────────────────────────
+let _annotations = [];
+
+function annotationAdd(text, position) {
+    _annotations.push({ text, position: position || [0, 0, 0], created: Date.now() });
+    annotationRender();
+}
+
+function annotationRender() {
+    const list = document.getElementById('annotationList');
+    if (!list) return;
+    if (!_annotations.length) {
+        list.innerHTML = '<div class="empty-state"><p>No annotations</p></div>';
+        return;
+    }
+    list.innerHTML = _annotations.map((a, i) => `
+        <div class="annotation-item">
+            <div class="annotation-item-text">${a.text}</div>
+            <div class="annotation-item-pos">pos(${a.position.map(v => v.toFixed(1)).join(', ')})</div>
+        </div>
+    `).join('');
+}
+
+async function annotationExportPNG() {
+    // Capture current 3D view as screenshot
+    if (window._sceneViewer && window._sceneViewer.renderer) {
+        const canvas = window._sceneViewer.renderer.domElement;
+        const dataUrl = canvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = `vibe3d_snapshot_${Date.now()}.png`;
+        link.href = dataUrl;
+        link.click();
+        addChatMsg('system', 'Snapshot exported as PNG');
+    } else {
+        addChatMsg('system', 'No 3D viewer available for snapshot');
+    }
+}
+
+// ── Performance Monitor ─────────────────────────────────────
+let _perfMonitorActive = false;
+let _perfInterval = null;
+
+function perfStartMonitor() {
+    if (_perfMonitorActive) return;
+    _perfMonitorActive = true;
+    _perfInterval = setInterval(perfUpdate, 2000);
+    perfUpdate();
+}
+
+function perfStopMonitor() {
+    _perfMonitorActive = false;
+    if (_perfInterval) { clearInterval(_perfInterval); _perfInterval = null; }
+}
+
+function perfUpdate() {
+    // Collect metrics from Three.js renderer
+    let fps = 0, memory = 0, drawCalls = 0, triangles = 0;
+
+    if (window._sceneViewer && window._sceneViewer.renderer) {
+        const info = window._sceneViewer.renderer.info;
+        drawCalls = info.render?.calls || 0;
+        triangles = info.render?.triangles || 0;
+        // FPS approximation from frame delta
+        fps = Math.round(1000 / Math.max(16, info.render?.frame ? 16 : 16));
+    }
+
+    // Memory from performance API
+    if (performance.memory) {
+        memory = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
+    }
+
+    perfRenderMeters({ fps, memory, drawCalls, triangles });
+    perfCheckThresholds({ fps, memory, drawCalls, triangles });
+}
+
+function perfRenderMeters(m) {
+    const container = document.getElementById('perfMeters');
+    if (!container) return;
+
+    const fpsColor = m.fps >= 50 ? 'perf-good' : m.fps >= 30 ? 'perf-warn' : 'perf-bad';
+    const memColor = m.memory < 500 ? 'perf-good' : m.memory < 1000 ? 'perf-warn' : 'perf-bad';
+    const dcColor = m.drawCalls < 200 ? 'perf-good' : m.drawCalls < 500 ? 'perf-warn' : 'perf-bad';
+
+    container.innerHTML = `
+        <div class="perf-meter">
+            <span class="perf-meter-label">FPS</span>
+            <div class="perf-meter-bar"><div class="perf-meter-fill" style="width:${Math.min(100,m.fps/60*100)}%;background:${fpsColor==='perf-good'?'#22aa66':fpsColor==='perf-warn'?'#f5a623':'#cc3333'}"></div></div>
+            <span class="perf-meter-value ${fpsColor}">${m.fps}</span>
+        </div>
+        <div class="perf-meter">
+            <span class="perf-meter-label">Memory</span>
+            <div class="perf-meter-bar"><div class="perf-meter-fill" style="width:${Math.min(100,m.memory/1500*100)}%;background:${memColor==='perf-good'?'#22aa66':memColor==='perf-warn'?'#f5a623':'#cc3333'}"></div></div>
+            <span class="perf-meter-value ${memColor}">${m.memory} MB</span>
+        </div>
+        <div class="perf-meter">
+            <span class="perf-meter-label">Draw Calls</span>
+            <div class="perf-meter-bar"><div class="perf-meter-fill" style="width:${Math.min(100,m.drawCalls/500*100)}%;background:${dcColor==='perf-good'?'#22aa66':dcColor==='perf-warn'?'#f5a623':'#cc3333'}"></div></div>
+            <span class="perf-meter-value ${dcColor}">${m.drawCalls}</span>
+        </div>
+        <div class="perf-meter">
+            <span class="perf-meter-label">Triangles</span>
+            <div class="perf-meter-bar"><div class="perf-meter-fill" style="width:${Math.min(100,m.triangles/1000000*100)}%;background:#4fc3f7"></div></div>
+            <span class="perf-meter-value" style="color:#4fc3f7">${(m.triangles/1000).toFixed(0)}K</span>
+        </div>
+    `;
+}
+
+function perfCheckThresholds(m) {
+    const container = document.getElementById('perfSuggestions');
+    if (!container) return;
+
+    const suggestions = [];
+    if (m.fps < 30) {
+        suggestions.push('<strong>Low FPS:</strong> Consider reducing streaming radius or enabling LOD decimation on heavy tiles.');
+    }
+    if (m.memory > 1000) {
+        suggestions.push('<strong>High Memory:</strong> Too many tiles loaded. Try reducing enable distance in CityTileStreamer.');
+    }
+    if (m.drawCalls > 400) {
+        suggestions.push('<strong>Draw Calls:</strong> Enable GPU instancing or batch similar materials.');
+    }
+    if (m.triangles > 2000000) {
+        suggestions.push('<strong>High Triangle Count:</strong> Use "Decimate to Target" preset on heavy tiles.');
+    }
+
+    if (suggestions.length === 0) {
+        container.innerHTML = '<div class="perf-suggestion"><strong>All clear!</strong> Performance is within acceptable limits.</div>';
+    } else {
+        container.innerHTML = suggestions.map(s => `<div class="perf-suggestion">${s}</div>`).join('');
+    }
+}
+
+// ── Tool Mode Panel ──────────────────────────────────────────
+
+function toggleToolModePanel() {
+    const panel = document.getElementById('toolmodePanel');
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+    const btn = document.getElementById('toolModeBtn');
+    if (btn) btn.classList.toggle('active', !panel.classList.contains('hidden'));
+
+    if (panel.classList.contains('hidden')) {
+        setMeasureMode(null);
+    }
+}
+
+function switchToolMode(tab) {
+    document.querySelectorAll('.toolmode-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    document.querySelectorAll('.toolmode-content').forEach(c => c.classList.toggle('active', c.id === `toolmode-${tab}`));
+
+    // Reset measurement mode when switching tabs
+    if (tab !== 'measure') setMeasureMode(null);
+}
+
+// Override measurement callback to also populate results list
+(function() {
+    const origSet = window.setMeasureMode;
+    if (!origSet) return;
+
+    const origCallback = function(mType, result) {
+        let val = 0, unit = 'm';
+        if (mType === 'distance') { val = result.distance; }
+        else if (mType === 'height') { val = result.height; }
+        else if (mType === 'area') { val = result.area; unit = 'm²'; }
+
+        // Add to results panel
+        const container = document.getElementById('measureResults');
+        if (container) {
+            // Remove empty placeholder
+            const empty = container.querySelector('.toolmode-empty');
+            if (empty) empty.remove();
+
+            const item = document.createElement('div');
+            item.className = 'toolmode-result-item';
+            item.innerHTML = `
+                <span class="r-type">${mType}</span>
+                <span class="r-value">${val.toFixed(2)} ${unit}</span>
+                <span class="r-time">${new Date().toLocaleTimeString()}</span>
+            `;
+            container.appendChild(item);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Also record for export
+        recordMeasurement(mType, result);
+    };
+
+    // Patch setMeasureMode to wire our enhanced callback
+    const patchedSetMeasureMode = function(mode) {
+        origSet(mode);
+        if (mode && window.sceneViewer) {
+            window.sceneViewer.onMeasure = function(mType, result) {
+                let msg = '';
+                if (mType === 'distance') msg = `📏 거리: ${result.distance.toFixed(2)}m`;
+                else if (mType === 'height') msg = `📐 높이: ${result.height.toFixed(2)}m`;
+                else if (mType === 'area') msg = `⬡ 면적: ${result.area.toFixed(2)}m²`;
+                if (msg) addChatMsg('system', msg);
+                origCallback(mType, result);
+            };
+        }
+    };
+    window.setMeasureMode = patchedSetMeasureMode;
+})();
+
+// ── Path Finding ────────────────────────────────────────────
+let _pathStart = null, _pathEnd = null, _pathPickMode = null;
+
+function pathSetStart() {
+    _pathPickMode = 'start';
+    addChatMsg('system', '🟢 Click on the 3D scene to set path start point');
+    if (window.sceneViewer) {
+        window.sceneViewer.onSceneClick = (point) => {
+            if (_pathPickMode === 'start') {
+                _pathStart = { x: point.x, y: point.y, z: point.z };
+                document.getElementById('pathStartLabel').textContent =
+                    `(${point.x.toFixed(1)}, ${point.y.toFixed(1)}, ${point.z.toFixed(1)})`;
+                _pathPickMode = null;
+                addChatMsg('system', `Start set: (${point.x.toFixed(1)}, ${point.y.toFixed(1)}, ${point.z.toFixed(1)})`);
+            }
+        };
+    }
+}
+
+function pathSetEnd() {
+    _pathPickMode = 'end';
+    addChatMsg('system', '🔴 Click on the 3D scene to set path end point');
+    if (window.sceneViewer) {
+        window.sceneViewer.onSceneClick = (point) => {
+            if (_pathPickMode === 'end') {
+                _pathEnd = { x: point.x, y: point.y, z: point.z };
+                document.getElementById('pathEndLabel').textContent =
+                    `(${point.x.toFixed(1)}, ${point.y.toFixed(1)}, ${point.z.toFixed(1)})`;
+                _pathPickMode = null;
+                addChatMsg('system', `End set: (${point.x.toFixed(1)}, ${point.y.toFixed(1)}, ${point.z.toFixed(1)})`);
+            }
+        };
+    }
+}
+
+function pathCompute() {
+    if (!_pathStart || !_pathEnd) {
+        addChatMsg('system', 'Please set both start and end points first');
+        return;
+    }
+
+    // Compute straight-line distance (NavMesh path would need Unity)
+    const dx = _pathEnd.x - _pathStart.x;
+    const dy = _pathEnd.y - _pathStart.y;
+    const dz = _pathEnd.z - _pathStart.z;
+    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    const walkSpeed = 1.4; // m/s average walking speed
+    const timeSeconds = dist / walkSpeed;
+
+    document.getElementById('pathDistLabel').textContent = `${dist.toFixed(2)} m`;
+    document.getElementById('pathTimeLabel').textContent = timeSeconds < 60
+        ? `${timeSeconds.toFixed(0)} sec`
+        : `${(timeSeconds/60).toFixed(1)} min`;
+
+    // Draw line in 3D viewer
+    if (window.sceneViewer && window.sceneViewer.drawPath) {
+        window.sceneViewer.drawPath(_pathStart, _pathEnd);
+    }
+
+    // Results
+    const container = document.getElementById('pathResults');
+    if (container) {
+        const empty = container.querySelector('.toolmode-empty');
+        if (empty) empty.remove();
+        const item = document.createElement('div');
+        item.className = 'toolmode-result-item';
+        item.innerHTML = `
+            <span class="r-type">Straight-line</span>
+            <span class="r-value">${dist.toFixed(2)} m</span>
+            <span class="r-time">${(timeSeconds/60).toFixed(1)} min walk</span>
+        `;
+        container.appendChild(item);
+    }
+
+    addChatMsg('system', `Path: ${dist.toFixed(2)}m straight-line, ~${(timeSeconds/60).toFixed(1)} min walk at 1.4 m/s`);
+}
+
+function pathClear() {
+    _pathStart = null;
+    _pathEnd = null;
+    _pathPickMode = null;
+    document.getElementById('pathStartLabel').textContent = 'Not set';
+    document.getElementById('pathEndLabel').textContent = 'Not set';
+    document.getElementById('pathDistLabel').textContent = '—';
+    document.getElementById('pathTimeLabel').textContent = '—';
+    const container = document.getElementById('pathResults');
+    if (container) container.innerHTML = '<div class="toolmode-empty">Set start/end points on the scene, then click Find Path</div>';
+    if (window.sceneViewer && window.sceneViewer.clearPath) window.sceneViewer.clearPath();
+}
+
+// ── Visibility Analysis ─────────────────────────────────────
+let _visSensors = [];
+let _visPickMode = false;
+
+function visSetSensor() {
+    _visPickMode = true;
+    addChatMsg('system', '📷 Click on the 3D scene to place a sensor');
+    if (window.sceneViewer) {
+        window.sceneViewer.onSceneClick = (point) => {
+            if (!_visPickMode) return;
+            const template = document.getElementById('visSensorTemplate').value;
+            const range = parseFloat(document.getElementById('visRange').value) || 50;
+            const fov = template === 'cctv_90' ? 90 : template === 'cctv_120' ? 120 : template === 'dome_360' ? 360 : 90;
+
+            _visSensors.push({
+                position: { x: point.x, y: point.y, z: point.z },
+                template, range, fov,
+            });
+
+            _visPickMode = false;
+            addChatMsg('system', `Sensor placed at (${point.x.toFixed(1)}, ${point.y.toFixed(1)}, ${point.z.toFixed(1)}) — ${template} ${fov}° / ${range}m`);
+
+            // Show sensor in results
+            const container = document.getElementById('visResults');
+            if (container) {
+                const empty = container.querySelector('.toolmode-empty');
+                if (empty) empty.remove();
+                const item = document.createElement('div');
+                item.className = 'toolmode-result-item';
+                item.innerHTML = `
+                    <span class="r-type">${template}</span>
+                    <span class="r-value">${fov}° / ${range}m</span>
+                    <span class="r-time">(${point.x.toFixed(0)}, ${point.z.toFixed(0)})</span>
+                `;
+                container.appendChild(item);
+            }
+        };
+    }
+}
+
+function visCompute() {
+    if (_visSensors.length === 0) {
+        addChatMsg('system', 'Please place at least one sensor first');
+        return;
+    }
+
+    // Compute coverage estimate (approximation based on sensor FOV and range)
+    let totalCoverageArea = 0;
+    const sensorReports = _visSensors.map((s, i) => {
+        const radiusM = s.range;
+        const fovRad = (s.fov / 360) * 2 * Math.PI;
+        const sectorArea = 0.5 * radiusM * radiusM * fovRad;
+        totalCoverageArea += sectorArea;
+        return {
+            id: i + 1,
+            template: s.template,
+            fov: s.fov,
+            range: s.range,
+            coverage_m2: Math.round(sectorArea),
+            position: s.position,
+        };
+    });
+
+    // Build report
+    const report = {
+        sensor_count: _visSensors.length,
+        total_coverage_m2: Math.round(totalCoverageArea),
+        sensors: sensorReports,
+    };
+
+    // Display in results
+    const container = document.getElementById('visResults');
+    if (container) {
+        container.innerHTML = `
+            <div class="toolmode-result-item" style="font-weight:600;border-bottom:2px solid #333">
+                <span class="r-type">TOTAL</span>
+                <span class="r-value">${totalCoverageArea.toFixed(0)} m²</span>
+                <span class="r-time">${_visSensors.length} sensors</span>
+            </div>
+        ` + sensorReports.map(s => `
+            <div class="toolmode-result-item">
+                <span class="r-type">#${s.id} ${s.template}</span>
+                <span class="r-value">${s.coverage_m2} m²</span>
+                <span class="r-time">${s.fov}°/${s.range}m</span>
+            </div>
+        `).join('');
+    }
+
+    addChatMsg('system', `Visibility Report: ${_visSensors.length} sensors, ~${totalCoverageArea.toFixed(0)} m² coverage`);
+    window._lastVisReport = report;
+}
+
+function visClear() {
+    _visSensors = [];
+    _visPickMode = false;
+    const container = document.getElementById('visResults');
+    if (container) container.innerHTML = '<div class="toolmode-empty">Place sensors and click Analyze for coverage report</div>';
+}
+
+function visExportReport() {
+    if (!window._lastVisReport) {
+        addChatMsg('system', 'No visibility report to export. Click Analyze first.');
+        return;
+    }
+    const json = JSON.stringify(window._lastVisReport, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `visibility_report_${Date.now()}.json`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+    addChatMsg('system', 'Visibility report exported as JSON');
+}
+
+// ── Enhanced Annotations (3D pins + PDF + server persistence) ──
+
+let _annotationPinMode = false;
+let _annotationPins = []; // {id, text, position, element}
+
+function annotationStartPinMode() {
+    _annotationPinMode = true;
+    addChatMsg('system', '📌 Click on the 3D scene to place annotation pin');
+    if (window.sceneViewer) {
+        window.sceneViewer.onSceneClick = (point) => {
+            if (!_annotationPinMode) return;
+            _annotationPinMode = false;
+            const text = document.getElementById('annotationText')?.value?.trim() || 'Annotation';
+            annotationPlacePin(text, [point.x, point.y, point.z]);
+            const input = document.getElementById('annotationText');
+            if (input) input.value = '';
+        };
+    }
+}
+
+function annotationPlacePin(text, position) {
+    const pin = {
+        id: `pin_${Date.now()}`,
+        text,
+        position,
+        created: Date.now(),
+    };
+    _annotationPins.push(pin);
+    _annotations.push({ text, position, created: Date.now() });
+
+    // Create 3D pin overlay element
+    const container = document.getElementById('scene3dContainer');
+    if (container) {
+        const el = document.createElement('div');
+        el.className = 'scene-pin';
+        el.id = pin.id;
+        el.title = text;
+        el.innerHTML = `<div class="scene-pin-tooltip">${text}</div>`;
+        container.appendChild(el);
+        pin.element = el;
+
+        // Position will be updated in animation loop if sceneViewer supports it
+        updatePinPosition(pin);
+    }
+
+    annotationRender();
+    addChatMsg('system', `📌 Pin placed: "${text}" at (${position.map(v=>v.toFixed(1)).join(', ')})`);
+
+    // Persist to server via bookmark annotations
+    annotationPersistToServer();
+}
+
+function updatePinPosition(pin) {
+    if (!window._sceneViewer || !window._sceneViewer.camera || !pin.element) return;
+    // Project 3D position to screen coordinates
+    const THREE = window.THREE;
+    if (!THREE) return;
+
+    const vec = new THREE.Vector3(pin.position[0], pin.position[1], pin.position[2]);
+    vec.project(window._sceneViewer.camera);
+
+    const canvas = document.getElementById('scene3dContainer');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (vec.x * 0.5 + 0.5) * rect.width;
+    const y = (-vec.y * 0.5 + 0.5) * rect.height;
+
+    // Hide if behind camera
+    if (vec.z > 1) {
+        pin.element.style.display = 'none';
+    } else {
+        pin.element.style.display = '';
+        pin.element.style.left = `${x}px`;
+        pin.element.style.top = `${y}px`;
+    }
+}
+
+// Update pin positions on camera move
+setInterval(() => {
+    _annotationPins.forEach(pin => updatePinPosition(pin));
+}, 100);
+
+async function annotationPersistToServer() {
+    // Save annotations to a bookmark for persistence
+    const annData = _annotations.map(a => ({
+        text: a.text,
+        position: a.position,
+        created: a.created,
+    }));
+
+    try {
+        // Try to update existing annotation bookmark
+        const listRes = await fetch('/api/bookmarks/?category=annotations');
+        const list = await listRes.json();
+        if (list.bookmarks.length > 0) {
+            await fetch(`/api/bookmarks/${list.bookmarks[0].bookmark_id}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ annotations: annData }),
+            });
+        } else {
+            await fetch('/api/bookmarks/', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name: 'Scene Annotations',
+                    category: 'annotations',
+                    annotations: annData,
+                }),
+            });
+        }
+    } catch (e) { /* best-effort persist */ }
+}
+
+async function annotationLoadFromServer() {
+    try {
+        const res = await fetch('/api/bookmarks/?category=annotations');
+        const data = await res.json();
+        if (data.bookmarks.length > 0 && data.bookmarks[0].annotations.length > 0) {
+            _annotations = data.bookmarks[0].annotations;
+            annotationRender();
+        }
+    } catch (e) { /* ignore */ }
+}
+
+function annotationExportPDF() {
+    // Generate a simple PDF-like report as downloadable HTML
+    const canvas = window._sceneViewer?.renderer?.domElement;
+    const imgData = canvas ? canvas.toDataURL('image/png') : '';
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Vibe3D Annotation Report</title>
+<style>
+body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+h1 { color: #333; border-bottom: 2px solid #4fc3f7; padding-bottom: 10px; }
+.snapshot { width: 100%; max-height: 400px; object-fit: contain; border: 1px solid #ddd; margin: 10px 0; }
+table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 12px; }
+th { background: #f5f5f5; }
+.footer { color: #999; font-size: 10px; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 8px; }
+</style></head><body>
+<h1>Vibe3D Annotation Report</h1>
+<p>Generated: ${new Date().toLocaleString()}</p>
+${imgData ? `<img class="snapshot" src="${imgData}" alt="Scene Snapshot">` : ''}
+<h2>Annotations (${_annotations.length})</h2>
+<table>
+<tr><th>#</th><th>Note</th><th>Position</th><th>Time</th></tr>
+${_annotations.map((a, i) => `<tr>
+<td>${i+1}</td><td>${a.text}</td>
+<td>(${a.position.map(v=>v.toFixed(1)).join(', ')})</td>
+<td>${new Date(a.created).toLocaleString()}</td>
+</tr>`).join('')}
+</table>
+${window._lastVisReport ? `<h2>Visibility Report</h2>
+<p>${window._lastVisReport.sensor_count} sensors, ${window._lastVisReport.total_coverage_m2} m² total coverage</p>` : ''}
+${_measurementHistory.length > 0 ? `<h2>Measurements (${_measurementHistory.length})</h2>
+<table><tr><th>Type</th><th>Value</th><th>Time</th></tr>
+${_measurementHistory.map(m => `<tr><td>${m.type}</td><td>${m.value.toFixed(2)} ${m.unit}</td><td>${m.timestamp}</td></tr>`).join('')}
+</table>` : ''}
+<div class="footer">Generated by Vibe3D v2.7</div>
+</body></html>`;
+
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `vibe3d_report_${Date.now()}.html`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+    addChatMsg('system', 'Report exported as HTML (printable to PDF via browser)');
+}
+
+// Load annotations on startup
+document.addEventListener('DOMContentLoaded', () => { annotationLoadFromServer(); });
+
+// ── Performance Tuner: Backend metrics + auto-preset ────────
+
+async function perfFetchBackendMetrics() {
+    try {
+        const res = await fetch('/api/mesh/edit/report');
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (e) { return null; }
+}
+
+async function perfAutoSuggestPresets() {
+    const report = await perfFetchBackendMetrics();
+    if (!report || !report.tiles) return;
+
+    const suggestions = [];
+    for (const tile of report.tiles) {
+        if (tile.original_tris > 1500000 && tile.active_version === 0) {
+            suggestions.push({
+                tile_id: tile.tile_id,
+                original_tris: tile.original_tris,
+                preset: 'decimate_to_target',
+                reason: `${tile.tile_id} has ${tile.original_tris.toLocaleString()} tris (unedited) — decimation recommended`,
+            });
+        }
+    }
+
+    const container = document.getElementById('perfSuggestions');
+    if (container && suggestions.length > 0) {
+        const existing = container.innerHTML;
+        const autoHtml = suggestions.map(s =>
+            `<div class="perf-suggestion"><strong>Auto:</strong> ${s.reason}
+             <button onclick="perfApplyPreset('${s.tile_id}','${s.preset}')" style="margin-left:4px;padding:2px 6px;font-size:9px;border:1px solid #4fc3f7;background:transparent;color:#4fc3f7;border-radius:3px;cursor:pointer">Apply</button></div>`
+        ).join('');
+        container.innerHTML = existing + autoHtml;
+    }
+}
+
+async function perfApplyPreset(tileId, preset) {
+    try {
+        const res = await fetch('/api/mesh/edit/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ tile_id: tileId, preset }),
+        });
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        addChatMsg('system', `Auto-edit started for ${tileId}: job ${data.job_id}`);
+    } catch (e) {
+        addChatMsg('system', `Auto-edit failed: ${e.message}`);
+    }
+}
+
+// Run backend metric check periodically when perf panel is active
+setInterval(() => {
+    if (_perfMonitorActive) perfAutoSuggestPresets();
+}, 30000); // every 30s

@@ -1,0 +1,332 @@
+[개발지시서] 3DGS(3D Gaussian Splatting) 타일 파이프라인 + Unity(Windows) 통합 설계 (Vibe3D 연계)
+버전: v1.0
+작성일: 2026-03-02
+대상: Vibe3D v2.6 기반(Backend/FastAPI + Web(Three.js) + Unity Windows 앱) 개발팀
+
+================================================================================
+0. 한 줄 결론(왜 붙이는가)
+================================================================================
+- 3DGS를 연계하면 “보기(렌더링)” 품질은 보통 Photogrammetry Mesh보다 더 실사스럽게 개선될 가능성이 큼.
+- 단, 3DGS는 메쉬가 아니라 “스플랫(가우시안)” 표현이므로,
+  계측/동선/NavMesh/가시성 Raycast 같은 “시뮬레이션/인터랙션”은
+  기존 Mesh/ColliderProxy 레이어를 유지하는 하이브리드가 정답.
+
+권장 구조:
+- Render Layer = 3DGS(타일별 PLY/SPZ/Asset)
+- Interaction Layer = Mesh(LOD) + ColliderProxy(필수) + NavMesh(선택)
+
+================================================================================
+1. 적용 범위/전제
+================================================================================
+1.1 입력 데이터
+- 드론 다각 카메라(전/후/좌/우 45도 + 직부감), 도시 단위, OBJ 타일(OBJ/MTL/JPG)
+- 좌표계/스케일: 미터 기반(항공측량 정합)
+
+1.2 목표
+- Unity Windows 앱에서:
+  - “3DGS ON/OFF 품질 프리셋” 제공
+  - 타일 스트리밍과 연동해 주변 타일만 3DGS 로딩
+  - Mesh/ColliderProxy 기반 계측(A), 동선(B), 가시성(B) 기능은 그대로 안정 동작
+
+1.3 제약(필수 인지)
+- Unity에서 3DGS 렌더링은 보통 D3D12/Metal/Vulkan “서브그룹(wave/subgroup) 연산”이 필요하여 DX11에서는 동작하지 않는 구현이 많음.
+- 3DGS 훈련(학습) 코드/데이터의 라이선스가 서로 다름. “뷰어 플러그인 MIT”만 보고 상업 사용을 판단하면 위험.
+
+================================================================================
+2. 기술 선택(렌더러/훈련) - 의사결정 표
+================================================================================
+2.1 Unity 렌더러 선택
+A) UnityGaussianSplatting (aras-p)
+- 장점: Unity 내에서 PLY/SPZ를 “GaussianSplatAsset”으로 변환(압축 옵션 포함), 선형 색공간에서도 상대적으로 대응 수월한 편
+- 제약: Windows는 DX12/Vulkan 필요( DX11 미지원 ), 프로젝트/플랫폼 제약 존재
+- 라이선스: MIT (단, PLY 파일 생성(훈련) 측 라이선스는 별도)
+
+B) gsplat-unity (wuyize25)
+- 장점: BiRP/URP/HDRP 통합이 유연(투명 큐에 자연스럽게 삽입), 자동 임포트로 Gsplat Asset 생성
+- 제약: 대부분 3DGS 모델이 Gamma 공간으로 학습되어 “프로젝트 Color Space=Gamma”가 권장(Linear에서는 품질 저하 가능, 재학습 권장)
+- 제약: Windows D3D12/Vulkan 필요(서브그룹 연산)
+- 라이선스: MIT
+
+권장(초기):
+- Unity 프로젝트가 URP/HDRP 통합이 중요하고 Gamma 운용 가능 → gsplat-unity 우선
+- Linear Color Space를 고수해야 하거나, 자산 압축/관리 워크플로우를 Unity 메뉴로 표준화하고 싶음 → UnityGaussianSplatting 우선
+
+2.2 3DGS “훈련” 엔진 선택(라이선스 관점 중요)
+A) graphdeco-inria/gaussian-splatting (공식 레퍼런스)
+- 장점: 가장 표준적인 결과(학습/렌더 기준)
+- 중대 제약: “연구/평가 목적 비상업” 사용 제한. 상업 사용은 Licensor(예: INRIA) 사전 동의 필요.
+- 결론: PoC/연구는 가능하나, 상용/납품형 서비스라면 법무/라이선스 확인 필수.
+
+B) nerfstudio/gsplat 기반(오픈소스 Apache-2.0 계열)
+- 장점: Apache-2.0로 상용 사용에 유리한 편(단, 전체 파이프라인이 Apache인지 확인 필요)
+- 주의: “원본 3DGS 코드의 파생물인지”가 논쟁이 될 수 있어, SBOM/출처 관리가 중요.
+
+권장(실무):
+- “상용 목적”이면 B(nerfstudio 계열)로 가는 것을 기본 원칙으로 하고,
+- A(공식)는 벤치마크/검증/비교용으로만 사용하거나 별도 라이선스 계약 후 사용.
+
+================================================================================
+3. 3DGS 타일 파이프라인(오프라인 배치) 설계
+================================================================================
+3.1 큰 그림
+[원본 입력]
+- 이미지(다각카메라 원본) + 카메라 포즈(SfM/COLMAP) + 타일 그리드 정의
+[타일 데이터셋 빌더]
+- 타일별 이미지/포즈/마스크(옵션) 생성 + 로컬 좌표 정규화
+[훈련]
+- 타일별 3DGS 훈련 → PLY(또는 SPZ) 산출
+[후처리]
+- prune/compact/quality tier 생성 (near/mid/far 또는 high/low)
+[패키징]
+- 타일별 manifest.json 생성 + Unity 임포트용 폴더 배치
+
+3.2 입력 요구사항(권장)
+- COLMAP 결과(최소):
+  - cameras.bin / images.bin / points3D.bin (또는 텍스트 버전)
+- 타일 그리드 정의:
+  - tile_id = tile_x_y
+  - tile AABB(절대좌표): min/max (x,y,z) 또는 (x,z) + height range
+
+3.3 핵심 설계 포인트: “로컬 좌표” 정규화
+도시/항공측량 좌표(예: UTM)는 값이 매우 커서 3DGS 최적화/정렬에서 수치적으로 불안정해질 수 있음.
+권장:
+- 타일마다 local_origin = tile_center (또는 min corner)
+- 카메라 중심/3D 포인트/메쉬 좌표에서 local_origin을 빼서 “타일 로컬 좌표계”로 변환하여 훈련
+- Unity에서 로딩할 때는 local_origin을 다시 더해 원래 절대좌표로 배치(또는 Floating Origin에 맞춰 오프셋 적용)
+
+3.4 타일별 이미지/포즈 선택 로직(권장)
+- camera frustum(또는 viewing ray)이 타일 AABB와 교차하는 이미지들을 선택
+- 최소 컷:
+  - 타일당 이미지 수 < N_min(예: 30) 이면 “3DGS 타일 생성 스킵(품질 부족)” 또는 인접 타일과 병합
+- 경계 품질:
+  - seam 완화를 위해 타일 경계에 overlap margin(예: 10~30m)을 둔 “확장 AABB”로 학습
+  - Unity에서 시각화 시 overlap 구간은 cross-fade(거리 기반) 또는 우선순위 규칙으로 처리
+
+3.5 산출 포맷(데이터 포맷)
+(표준) PLY
+- 대부분 Unity/웹 렌더러가 기본 지원
+- SH degree(0~3), opacity, scale, rotation 등의 속성이 포함될 수 있음(훈련 파이프라인에 따라 상이)
+
+(선택) SPZ (Scaniverse 등) / 내부 커스텀 압축
+- UnityGaussianSplatting은 SPZ도 지원하는 것으로 알려져 있으며, 용량/로드 성능에 유리할 수 있음
+- 다만 SPZ 생성/변환 도구 및 라이선스/상용 권한을 별도 확인해야 함
+
+(옵션) .splat (웹 뷰어에서 쓰는 포맷)
+- Unity SplatVFX 등에서 사용 가능하지만, SH 등을 제한하거나 품질 제약이 있을 수 있어 “PC 앱 메인”에서는 권장 순위가 낮음
+
+3.6 폴더 구조(프로젝트 워크스페이스)
+권장: 기존 Vibe3D 타일/편집 버전 구조에 3DGS를 병렬 추가
+
+/projects/{project_id}/
+  /tiles_raw/                      # 원본 OBJ/MTL/JPG (read-only)
+  /tiles_edit/                     # 메쉬 편집 결과(LOD/Collider) 버전
+  /gsplat_raw/                     # 3DGS 훈련 입력(타일별 데이터셋)
+    /tile_{x}_{y}/
+      /images/                     # 선택된 이미지(심볼릭 링크 가능)
+      /colmap/                     # 타일별 포즈/내부파라미터(로컬좌표)
+      /masks/                      # (옵션) 건물/하늘 마스크
+      dataset.json                 # 메타/좌표 오프셋
+  /gsplat_train/                   # 훈련 로그/체크포인트
+    /tile_{x}_{y}/
+      /run_20260302_001/
+        config.yaml
+        logs/
+        checkpoints/
+  /gsplat_tiles/                   # 최종 산출(Unity 로딩용)
+    /tile_{x}_{y}/
+      /v0001/
+        tile_{x}_{y}.ply           # 또는 .spz
+        preview_top.png
+        preview_oblique.png
+        manifest.json
+  /gsplat_active_versions.json     # tile_id -> active splat version
+  /reports/
+    gsplat_metrics.csv             # 타일별 splat 수/용량/권장 로딩반경 등
+
+3.7 manifest.json (3DGS 타일 메타)
+필수 필드:
+- project_id, tile_id, version, created_at
+- local_origin: [x,y,z]            # 절대좌표에서 뺀 값
+- aabb_local: {min:[x,y,z], max:[x,y,z]}
+- aabb_world: {min:[x,y,z], max:[x,y,z]} (선택)
+- format: "ply" | "spz" | "splat"
+- splat_count: int                 # 가우시안 개수
+- sh_degree: int
+- color_space: "gamma" | "linear"
+- quality_tier: "high"|"mid"|"low"
+- recommended:
+  - load_radius_m: float
+  - vram_budget_mb: float
+- license_note:
+  - training_engine: "gsplat"|"inria"...
+  - training_license: "Apache-2.0"|"Inria research-only"...
+
+================================================================================
+4. Unity 통합 설계(Windows Standalone)
+================================================================================
+4.1 프로젝트 세팅(필수)
+- Graphics API(Windows):
+  - Auto Graphics API 해제
+  - Direct3D12 또는 Vulkan만 남김 (DX11 제거)
+- Quality Preset:
+  - 3DGS 품질 프리셋(High/Balanced/Performance) 추가
+- Color Space:
+  - 렌더러/자산 학습 컬러스페이스와 일치시키는 것이 최선
+  - gsplat-unity 사용 시, Gamma 학습 자산은 프로젝트 Gamma가 권장(Linear로 운영하려면 재학습 권장)
+
+4.2 런타임 구성(권장 컴포넌트)
+- CityManager
+  - TileStreamingManager (기존)
+  - FloatingOriginMgr (기존)
+  - MeshTileLoader (기존)
+  - SplatTileLoader (신규)
+  - QualityPresetManager (신규)
+  - FallbackManager (신규: 3DGS 불가 환경 자동 Mesh 전환)
+
+4.3 타일 로딩 정책(핵심)
+- 기존 Mesh 타일 로딩(LOD/ColliderProxy)은 유지
+- 3DGS 타일 로딩은 “품질 프리셋 + 거리 + GPU 지원 여부”에 따라 선택적으로 수행
+
+권장 정책(예시):
+- Performance:
+  - Mesh만 로딩(LOD 기반), 3DGS 로딩 금지
+- Balanced:
+  - 카메라 주변 R1(예: 1~2타일 반경)만 3DGS 로딩
+  - 그 외는 Mesh LOD1/2
+- High:
+  - R1 범위 3DGS 로딩 + Mesh 렌더는 OFF(또는 LOD2만 유지)
+  - R2 범위(예: 3~4타일)에는 3DGS low-tier(선택) 또는 Mesh LOD
+
+4.4 “하이브리드” 상호작용 원칙(필수)
+- 계측/동선/가시성(Raycast/NavMesh)은 ColliderProxy 레이어만 대상으로 고정
+- 3DGS 오브젝트에는 Collider를 붙이지 않는다(성능/정확도/개발 난이도)
+- 선택/하이라이트는:
+  - building footprint/BBox/GeoBIM 인덱스 기반으로 유지
+  - 3DGS는 “보여주는 레이어”에 집중
+
+4.5 타일 스트리밍 연동(구현 지시)
+- TileStreamingManager에서 tile_id set(활성 타일 목록)을 얻음
+- 활성 타일 변화 이벤트에 따라:
+  - OnTileLoaded(tile_id):
+      - MeshTileLoader.Load(tile_id)
+      - ColliderProxy.Load(tile_id)
+      - if (QualityPreset allows && SplatAvailable(tile_id) && GPU supports):
+          SplatTileLoader.Load(tile_id, tier=High/Low)
+  - OnTileUnloaded(tile_id):
+      - SplatTileLoader.Unload(tile_id)
+      - MeshTileLoader.Unload(tile_id) (정책에 따라)
+
+4.6 Floating Origin 연동(중요)
+- 3DGS 타일은 local_origin 기반으로 배치하므로,
+  - 월드 오프셋이 변경될 때(OriginShift) SplatTile GameObject도 동일 delta로 이동
+- 절대좌표(보고/계측용)와 렌더좌표(원점 이동 적용)는 분리 유지
+
+================================================================================
+5. 품질 프리셋(사용자 옵션) - 권장 정의
+================================================================================
+Preset: PERFORMANCE
+- Mesh LOD: Aggressive (LOD2 빠르게)
+- ColliderProxy: ON
+- 3DGS: OFF
+- 목표: FPS 안정(시뮬/계측 위주)
+
+Preset: BALANCED
+- Mesh LOD: Normal
+- ColliderProxy: ON
+- 3DGS: ON (Near Tiles only)
+- Near Radius: 1~2 타일
+- 목표: 탐색 + 분석 균형
+
+Preset: HIGH(Photoreal)
+- Mesh Render: Near Tiles OFF(또는 LOD2 유지)
+- ColliderProxy: ON
+- 3DGS: ON (Near + optional Mid)
+- Near Radius: 2~3 타일 (GPU/VRAM 예산에 따라)
+- 목표: 프리젠테이션/데모 품질
+
+(옵션) DEBUG
+- 타일별 splat_count, VRAM, 로딩 시간 HUD 표시
+- seam risk, color space mismatch 경고 표시
+
+================================================================================
+6. 로딩/메모리 예산(성능 설계)
+================================================================================
+- 3DGS는 “가우시안 수(splat_count)”에 따라 VRAM/정렬 비용이 증가
+- 정책:
+  1) 타일당 splat_count 상한 설정(예: 3M~8M)
+  2) 타일별 quality_tier(High/Low) 2단 저장:
+     - Low tier는 원거리용, High tier는 근거리용
+  3) 동시 로드 타일 수 제한:
+     - Near 타일 3DGS는 Nmax(예: 9타일)
+  4) 로딩 실패/VRAM 부족 시 자동 Mesh fallback
+
+================================================================================
+7. 라이선스/컴플라이언스 체크 포인트(필수)
+================================================================================
+7.1 코드 라이선스(렌더러)
+- UnityGaussianSplatting: MIT
+- gsplat-unity: MIT
+- SplatVFX: Unlicense(실험적, 1차 메인 렌더러로 비권장)
+
+7.2 “훈련 코드” 라이선스(중대)
+- graphdeco-inria/gaussian-splatting:
+  - 연구/평가 목적 비상업 사용 제한 문구가 명시되어 있음.
+  - 상업적 사용/배포는 Licensor 사전 동의 필요(연락처 안내 포함).
+- 대안:
+  - nerfstudio/gsplat, nerfstudio(둘 다 Apache-2.0로 공개되어 있는 것으로 알려짐)
+  - 단, 파이프라인 구성 시 “Inria 코드/모델을 그대로 포함/파생”하지 않도록 SBOM과 출처를 관리해야 함.
+
+7.3 데이터 권리
+- 드론 촬영 이미지/재구성 결과물은 개인정보/시설 보안 이슈가 있을 수 있음.
+- 배포/시연용 데이터셋은 익명화(번호판/얼굴 등) 또는 시야 제한 필요(프로젝트 정책 반영).
+
+7.4 실무 체크리스트(권장)
+- [ ] 훈련에 사용한 코드 저장소/버전/라이선스 파일을 결과물 폴더에 기록(manifest.json)
+- [ ] 제품 배포물에 Third-party notices 포함(MIT/Apache/Unlicense 등)
+- [ ] 3DGS PLY/SPZ 자산의 “생성 경로”를 문서화(어떤 훈련 코드로 생성했는지)
+
+================================================================================
+8. 개발 작업 항목(백로그/분장)
+================================================================================
+8.1 Backend(FastAPI)
+- 신규 엔드포인트:
+  - POST /api/gsplat/tile/train/start (tile_id list, preset)
+  - GET  /api/gsplat/tile/train/status/{job}
+  - POST /api/gsplat/tile/activate (tile_id, version)
+  - GET  /api/gsplat/tile/list (versions/metrics)
+- Worker:
+  - GPU 노드에서 실행되는 gsplat_train_worker
+- 산출:
+  - gsplat_tiles/.../manifest.json 자동 생성
+  - gsplat_metrics.csv 갱신
+
+8.2 Unity
+- SplatTileLoader.cs (신규)
+  - manifest 읽기
+  - 렌더러 플러그인(선택한 구현)에 맞춰 Asset 로드/언로드
+- QualityPresetManager.cs (신규)
+- FallbackManager.cs (신규)
+- TileStreamingManager 연동(기존 코드에 hook 추가)
+
+8.3 Web UI
+- 타일별 3DGS 상태 표시(없음/생성중/완료/활성)
+- 프리셋 선택 + Near Radius 슬라이더 + VRAM 예산 표시
+- Before/After 비교(메쉬 vs 3DGS 토글)
+
+================================================================================
+9. PoC(최소 검증) 실행 계획
+================================================================================
+Phase 1 (1주)
+- 1개 타일(tile_x_y)만 3DGS 훈련 → PLY 생성
+- Unity에서 해당 타일 로딩 성공 + Mesh/Collider 유지 + 프리셋 토글 확인
+
+Phase 2 (2~3주)
+- 주변 3x3 타일 3DGS 생성
+- 스트리밍 반경 내에서 3DGS 로딩/언로딩 안정화
+- 가시성/동선/계측이 ColliderProxy 기준으로 정상 동작 확인
+
+Phase 3 (4~6주)
+- Overlap/Seam 완화(경계 margin + cross-fade)
+- VRAM 예산 기반 자동 tier 선택/자동 fallback
+
+끝.

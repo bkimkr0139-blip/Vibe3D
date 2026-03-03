@@ -1,0 +1,348 @@
+[개발지시서] Vibe3D 타일 단위 Mesh 편집(Blender Batch) 고도화 + 사용자 편의 기능 확장 (Windows PC 앱/Unity 중심)
+버전: v1.0 (Tile Edit A + Blender Batch 1)
+작성일: 2026-03-02
+대상: Vibe3D v2.6 기반 개발팀(Backend/FastAPI, Frontend/Three.js, Unity Editor/Runtime, 3D 파이프라인, AI)
+
+================================================================================
+0. 선택된 방향(요구사항 요약)
+================================================================================
+- 편집 대상 범위: A) “타일 단위” 편집만 지원 (타일 내부 브러시/라쏘 편집은 2차)
+- 편집 실행 방식: 1) Blender headless(배치/Job) 기반 서버 편집 엔진
+- 목적:
+  1) OBJ 타일(도시/항공측량, 건물/지면 혼재)을 Vibe3D에서 선택/편집(정리/경량화/분리/대체) 가능하게 함
+  2) 편집 결과를 Unity(Windows PC 앱) 씬에 안정적으로 반영하여 계측(A)/동선(B)/가시성(B) 기능 품질을 향상
+  3) 사용자가 “편집 포함 전체 워크플로우”를 더 쉽게 쓰도록 UI/UX 및 자동화(마법사, 프리셋, 리포트) 고도화
+
+================================================================================
+1. 핵심 개념/원칙(반드시 준수)
+================================================================================
+1. 원본 타일은 읽기 전용(READ-ONLY)로 보관한다.
+2. 편집 결과는 “편집 레이어(Edit Layer)”로 버전 관리한다(원본 덮어쓰기 금지).
+3. 렌더 메쉬(Render)와 물리/계측 메쉬(Proxy Collider)는 항상 분리한다.
+4. 모든 편집은 Job(비동기 작업)로 실행하고, 완료 후 “미리보기 → 적용” 2단계로 반영한다.
+5. 대규모 도시 좌표 안정성을 위해 Floating Origin 및 절대좌표/상대좌표 분리 원칙을 유지한다.
+6. “타일 단위 편집”은 타일 경계/정합을 절대 깨지지 않도록 안전장치를 둔다.
+
+================================================================================
+2. 사용자 시나리오(UX 플로우)
+================================================================================
+2.1 기본 플로우(타일 정리/경량화)
+(1) 사용자가 Web UI(3D 뷰어) 또는 Unity에서 타일을 선택
+(2) [타일 편집] 패널에서 프리셋 선택:
+    - Clean Noise / Remove Small Parts / Decimate / Rebuild Collider / Regenerate LOD
+(3) “작업 제출” → 진행률 표시(Job Queue)
+(4) 완료 후 “Before/After 미리보기(토글)” 제공
+(5) “적용(Apply)” 시:
+    - Unity 씬에 편집 타일이 원본 대신 Overlay로 로딩
+    - Collider Proxy/LOD/NavMesh(선택) 업데이트
+    - GeoBIM(BuildingIndex) 갱신(선택)
+
+2.2 품질 개선 플로우(GeoBIM/가시성/동선 품질 향상)
+- 타일 편집 프리셋 + 후처리:
+  - (A) 계측 정확도 개선: 지면 연속성 강화(콜라이더 프록시 고도화)
+  - (B) 동선 개선: NavMesh Bake 재생성(타일/구역 단위)
+  - (C) 가시성 개선: 수목/노이즈 제거(차폐 오탐 감소) + Coverage Report 재생성
+
+================================================================================
+3. 추가/고도화 기능 범위(우선순위 백로그)
+================================================================================
+P0 (필수, 2~3주 목표)
+- 타일 편집 Job 시스템(큐/상태/결과/미리보기/적용)
+- Blender headless 편집 엔진(기본 4종 편집: Clean, Decimate, ProxyCollider, LOD)
+- Unity 반영(Overlay 적용/교체, Collider 연결, 타일 스트리밍 연동)
+- 사용자 UI: 타일 선택 → 프리셋 → 제출 → 미리보기 → 적용
+
+P1 (사용자 체감 큰 고도화, 3~6주)
+- “타일 편집 마법사(Wizard)”:
+  - 데이터 규모 분석(폴리곤/텍스처) → 권장 프리셋 제안 → 예상 결과(용량/성능) 표시
+- “편집 이력/버전 비교”:
+  - Edit v1/v2/v3 롤백, Diff(메쉬/LOD/콜라이더)
+- “원클릭 리포트”:
+  - 타일별 폴리곤/텍스처/콜라이더/가시성/동선 성능 리포트 자동 생성
+
+P2 (AI 자동화 고도화, 6~10주)
+- 타일 단위 “AI 분류 기반 정리 프리셋”:
+  - 수목/차량/잡물 제거(렌더 기반 2D 세그→3D 라벨링)
+- “자동 품질 점수”:
+  - 계측 안정성(지면 거칠기), 가시성 오탐 위험, NavMesh 실패 위험 점수화
+
+================================================================================
+4. 시스템 아키텍처 변경 사항
+================================================================================
+4.1 Backend(FastAPI) - 신규 모듈/엔드포인트
+- 신규: /api/mesh/edit/ (타일 편집)
+  POST /api/mesh/edit/start
+    - 입력: project_id, tile_id, base_version(원본 또는 특정 편집 버전), preset_id(or actions)
+    - 출력: edit_job_id
+  GET  /api/mesh/edit/status/{edit_job_id}
+    - 진행률(%), 단계, 로그 요약, ETA(선택)
+  GET  /api/mesh/edit/preview/{edit_job_id}
+    - 결과 미리보기용 저해상도 렌더/스크린샷(옵션) 또는 통계(폴리곤/용량)
+  POST /api/mesh/edit/apply/{edit_job_id}
+    - Unity 적용 계획(plan) 생성 + 프로젝트 편집 레이어에 “활성 버전” 반영
+  POST /api/mesh/edit/cancel/{edit_job_id}
+  GET  /api/mesh/edit/history?project_id=...
+    - 타일별 편집 버전 목록/메타데이터/롤백 포인트
+
+- 신규: Job Queue/Worker
+  - queue: sqlite/redis 중 택1 (1차는 sqlite queue로도 가능)
+  - worker 프로세스: blender_headless_worker.py
+  - 작업 단계 표준화:
+    1) import tile
+    2) cleanup (optional)
+    3) decimate/optimize (optional)
+    4) generate collider proxy (optional)
+    5) generate LODs (optional)
+    6) export assets + metrics
+    7) package + register + notify
+
+4.2 Frontend(Web UI/Three.js)
+- 타일 선택 UI 강화:
+  - 타일 그리드 미니맵(현재 로드 타일 표시)
+  - 검색(타일 ID, 좌표, 품질점수)
+- “Tile Edit” 패널:
+  - 프리셋 버튼 + 고급 옵션(목표 폴리곤, 최소 파편 크기, 텍스처 다운스케일)
+  - Job Progress(실시간) + 로그/경고
+  - Before/After 토글(미리보기)
+
+4.3 Unity(Editor + Runtime)
+- Editor Tool 확장:
+  - “Apply Edited Tile” 기능: 특정 tile_id에 대해 base(Render/Collider/LOD) 교체
+  - “Rebuild NavMesh (Loaded Tiles)” 버튼(옵션)
+- Runtime:
+  - TileStreamingManager가 “활성 편집 버전”을 우선 로드하도록 분기
+  - Selection/Measurement/Visibility/Pathfind는 Proxy Collider 레이어를 기본 대상으로 유지
+
+================================================================================
+5. 데이터/버전 관리(반드시 구현)
+================================================================================
+5.1 프로젝트 워크스페이스(권장)
+/projects/{project_id}/
+  /tiles_raw/                 # 원본 OBJ/MTL/JPG (read-only)
+  /tiles_work/                # 작업 중 임시
+  /tiles_edit/                # 편집 결과 버전 관리
+    /tile_{x}_{y}/
+      /v0001/
+        tile_LOD0.fbx
+        tile_LOD1.fbx
+        tile_LOD2.fbx
+        tile_COLLIDER.fbx
+        manifest.json
+      /v0002/ ...
+  /geobim_db/
+    buildings.sqlite
+  /reports/
+    tile_metrics.csv
+    edit_jobs.log
+
+5.2 manifest.json(타일 편집 결과 메타데이터)
+- project_id, tile_id, version, base_version
+- preset_id / actions (파라미터 포함)
+- input_stats: {faces, verts, texture_count, size_bytes}
+- output_stats: {faces_LOD0, faces_LOD1, faces_LOD2, collider_faces, size_bytes}
+- quality_flags: {tile_seam_risk, holes_detected, navmesh_ready, ...}
+- created_at, created_by, tool_versions(blender, scripts, model)
+
+5.3 “활성 버전” 규칙
+- tile별 active_version을 별도 레지스트리에 저장:
+  - /projects/{project_id}/tiles_edit/active_versions.json
+- Unity 로딩 시:
+  1) active_version 존재하면 tiles_edit 경로 우선
+  2) 없으면 tiles_raw 사용
+
+================================================================================
+6. Blender Headless 편집 엔진(타일 단위) 구현 지시
+================================================================================
+6.1 공통 입력/출력
+- 입력: tile OBJ + MTL + textures, tile_id, preset(actions)
+- 출력:
+  - LOD0/1/2 (FBX 또는 GLB)
+  - COLLIDER Proxy (FBX 또는 GLB)
+  - metrics (faces/verts/materials/texture sizes)
+  - preview 이미지(옵션: top-down + oblique 1장씩)
+
+6.2 프리셋 정의(1차 필수 5종)
+Preset P0-1: CLEAN_NOISE
+- 목표: 작은 파편/부유 오브젝트 제거(오탐 차폐/물리 부담 감소)
+- 규칙:
+  - Loose parts 분리 후, 면적/바운딩박스 기준 임계치 이하 컴포넌트 삭제
+
+Preset P0-2: DECIMATE_TO_TARGET
+- 목표: 타일 렌더 메쉬를 목표 폴리곤(또는 ratio)로 경량화
+- 입력 파라미터:
+  - target_faces_LOD0 (예: 300k~1M), preserve_boundary=True(타일 경계 보존)
+- 출력:
+  - LOD0 생성(필수)
+
+Preset P0-3: GENERATE_LODS
+- 목표: LOD1/LOD2 자동 생성
+- 규칙(예시):
+  - LOD1 = LOD0의 35%
+  - LOD2 = LOD0의 10%
+
+Preset P0-4: GENERATE_COLLIDER_PROXY
+- 목표: Raycast/NavMesh/Visibility용 콜라이더 프록시 생성
+- 규칙:
+  - target_faces_collider(예: 50k~150k)
+  - 지면 연속성 우선(구멍/틈 최소화)
+  - 결과는 Renderer off + MeshCollider용
+
+Preset P0-5: PACK_FOR_UNITY
+- 목표: 위 산출물을 manifest와 함께 패키징(타일 버전 등록)
+
+6.3 “타일 경계 보존” 안전장치(필수)
+- Decimate 시:
+  - 타일 경계(타일 외곽 폴리라인) 근처 버텍스는 가중치 높여 변형 억제(가능하면)
+  - 또는 boundary strip(예: 외곽 1~2m)은 decimate 강도를 낮추는 2-pass 처리
+- 결과 검증:
+  - 이웃 타일과의 높이 차이(경계 샘플) 임계치 초과 시 tile_seam_risk=true
+
+================================================================================
+7. Backend API/데이터 모델 상세
+================================================================================
+7.1 요청 스키마(예시)
+POST /api/mesh/edit/start
+{
+  "project_id": "p_20260302_city01",
+  "tile_id": "tile_0012_0007",
+  "base_version": "raw" | "v0003",
+  "preset_id": "CLEAN_NOISE+DECIMATE_TO_TARGET+GENERATE_LODS+GENERATE_COLLIDER_PROXY",
+  "params": {
+    "target_faces_lod0": 600000,
+    "target_faces_collider": 90000,
+    "remove_small_parts_area_m2": 0.5
+  }
+}
+
+7.2 응답/상태
+- status: queued/running/succeeded/failed/canceled
+- progress: 0~100
+- stage: import/cleanup/decimate/collider/lod/export/package
+- artifacts: paths + sizes + stats
+- warnings: seam_risk, texture_missing, huge_material_count 등
+
+7.3 권한/승인(기존 NLU 승인 플로우와 통합)
+- NL 명령으로도 가능:
+  - “tile_0012_0007 타일을 60만 폴리곤으로 경량화하고 콜라이더 재생성해줘”
+- Plan Generator:
+  - action: MESH_EDIT_TILE(job_spec)
+- Validator:
+  - 예상 용량/폴리곤/시간/리스크를 계산하여 승인 UI에 표기
+- Executor:
+  - edit job 제출 → 완료 감지 → Unity apply plan 실행
+
+================================================================================
+8. Unity 반영(적용/교체) 구현 지시
+================================================================================
+8.1 Editor: Tile Swap 적용 로직
+- 입력: tile_id, target_version, artifacts paths
+- 동작:
+  1) 기존 타일 GameObject를 “BaseLayer”로 유지(숨김 가능)
+  2) “EditLayer/tile_id” 하위로 편집 타일 prefab을 생성/교체
+  3) LODGroup 구성(LOD0/1/2)
+  4) ColliderProxy 연결:
+     - MeshCollider(convex OFF), Static, 전용 Layer(TerrainCollider)
+  5) 타일 스트리밍 등록 정보 갱신(로드 경로가 edit 우선)
+
+8.2 NavMesh 재생성(선택)
+- 1차는 “버튼 기반(사용자 실행)”으로 제공:
+  - Rebuild NavMesh for Loaded Tiles
+- 2차는 자동:
+  - 콜라이더 변경이 큰 경우에만 트리거(confidence/face delta 기반)
+
+8.3 GeoBIM 갱신(선택)
+- 편집이 “건물/지면 형상”을 변경하면 BuildingIndex 영향 가능
+- 옵션:
+  - 타일 편집 적용 시 해당 tile_id만 GeoBIM 재추출 실행(비동기)
+  - 완료 후 buildings.sqlite 업데이트 + UI 갱신
+
+================================================================================
+9. 사용자 편의(UX) 추가 고도화 제안(편집 포함 최종 관점)
+================================================================================
+아래 항목은 “사용자 체감 편의”가 매우 커서, 편집 기능과 함께 넣는 것을 권장.
+
+9.1 프로젝트/데이터 마법사(초기 진입 개선) [P1 권장]
+- “새 프로젝트 생성” → OBJ 폴더 지정 → 자동 스캔/검증(누락 텍스처, 좌표계, 타일 규칙)
+- 결과 요약:
+  - 총 타일 수, 평균 폴리곤/텍스처, 예상 메모리/권장 스트리밍 반경
+- “권장 프리셋” 자동 제안:
+  - 성능 우선/품질 우선/균형 모드
+
+9.2 원클릭 도구 모드(측정/동선/가시성) 통합 UX [P1]
+- 화면 상단 “작업 탭” 3개:
+  - Measure / Path / Visibility
+- 각 탭에서:
+  - (Measure) 거리/높이/면적 + 결과 리스트 + 내보내기
+  - (Path) 시작/끝 클릭 + 경로 길이/시간 + 에이전트 실행
+  - (Visibility) 센서 템플릿(예: CCTV 90°/120°) + 커버리지 리포트
+
+9.3 북마크/작업 세트(Sets) [P1]
+- 특정 카메라 위치/관심 건물/측정 결과를 “세트”로 저장
+- 회의/리뷰 시 즉시 재현 가능(현장/평가 대응)
+
+9.4 주석(Annotation) & 스냅샷 리포트 [P1]
+- 타일/건물/지점에 핀+메모 추가
+- “스냅샷 + 현재 도구 결과(측정/가시성/동선)”를 PDF/PNG로 자동 export
+- 협업/보고에 매우 유리
+
+9.5 성능 자동 튜너(Performance Assistant) [P1~P2]
+- FPS/메모리/드로우콜 모니터링
+- 임계치 넘어가면:
+  - 스트리밍 반경 축소 권고
+  - LOD 프리셋 추천
+  - 특정 타일 “DECIMATE 프리셋” 자동 제안
+
+9.6 안전한 롤백/버전 비교 [P1]
+- “적용” 후 문제 생기면:
+  - 원클릭 롤백(v0002 → v0001)
+- 비교:
+  - 폴리곤/용량/콜라이더 면수/경계 seam risk 표시
+
+================================================================================
+10. 수용 기준(Definition of Done)
+================================================================================
+10.1 기능 DoD (P0)
+- 타일 편집 Job 생성/실행/상태/미리보기/적용/롤백이 동작
+- 편집 후 Unity 씬에 편집 타일이 Overlay로 반영되고, 스트리밍이 정상 동작
+- Proxy Collider가 생성되어:
+  - 계측 Raycast 오작동 없이 동작
+  - NavMesh 베이크가 수행 가능
+  - 가시성 Raycast 성능이 안정
+- 편집 결과가 버전/manifest로 재현 가능(동일 입력→동일 출력 보장)
+
+10.2 성능/안정 DoD (권장)
+- 활성 타일 N×N(예: 5×5)에서 60 FPS 목표(중급 GPU 기준)
+- 편집 Job 실패율 < 5% (입력 누락/블렌더 오류를 제외)
+- 타일 경계 seam risk 감지 및 경고 UI 노출
+
+================================================================================
+11. 마일스톤(권장 일정)
+================================================================================
+Week 1
+- API 스캐폴딩 + Job Queue + Blender worker PoC(1 tile)
+- Unity Editor “Apply Edited Tile” PoC
+Week 2
+- 프리셋 5종 완성 + manifest/버전관리 + 미리보기/적용/롤백
+- Web UI Tile Edit 패널 + 진행률
+Week 3
+- 타일 스트리밍/OriginShift 연동 안정화
+- NavMesh/가시성/계측이 Proxy Collider 기반으로 정상 동작 확인
+Week 4~6 (P1)
+- 마법사/리포트/북마크/주석/성능 튜너
+
+================================================================================
+12. 즉시 실행 체크리스트(오늘 할 일)
+================================================================================
+[데이터]
+□ 타일 파일명 규칙(tile_x_y) 확정 및 tile_id 목록 생성
+□ 누락 텍스처/MTL 링크 검증 스크립트 실행
+
+[편집 엔진]
+□ Blender headless worker 환경 점검(/collider/check-blender 활용)
+□ 1개 타일로 CLEAN_NOISE + DECIMATE + COLLIDER 생성 PoC 수행
+
+[Unity]
+□ 편집 타일 Overlay 로딩/교체 PoC
+□ Proxy Collider 레이어로 Raycast/측정/가시성/네비 테스트
+
+끝.

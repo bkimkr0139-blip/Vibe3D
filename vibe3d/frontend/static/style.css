@@ -922,7 +922,7 @@ body {
 /* ── Hierarchy ───────────────────────────────── */
 
 .hierarchy-section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.inspector-section { flex: 0 0 auto; max-height: 220px; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.inspector-section { flex: 0 0 auto; max-height: 340px; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
 
 .section-bar {
     display: flex;
@@ -1004,6 +1004,76 @@ body {
 .inspector-value input:focus { border-color: var(--accent); }
 
 .inspector-actions { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+
+/* Inspector enhancements */
+.inspector-header {
+    margin-bottom: 6px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+}
+.inspector-header-name {
+    font-size: 13px; font-weight: 700; color: var(--accent);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.inspector-header-path {
+    font-size: 9px; color: var(--text-3); margin-top: 1px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.inspector-badges {
+    display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px;
+}
+.inspector-badge {
+    font-size: 9px; font-weight: 600; padding: 1px 6px;
+    border-radius: 8px; white-space: nowrap;
+}
+.inspector-badge.tag { background: rgba(59,142,234,0.2); color: #3b8eea; }
+.inspector-badge.layer { background: rgba(156,136,255,0.2); color: #9c88ff; }
+.inspector-badge.active { background: rgba(34,170,102,0.2); color: #22aa66; }
+.inspector-badge.inactive { background: rgba(204,51,51,0.2); color: #cc3333; }
+.inspector-badge.type { background: rgba(245,166,35,0.15); color: #f5a623; }
+.inspector-info-divider {
+    font-size: 9px; font-weight: 600; color: var(--text-3); text-transform: uppercase;
+    margin: 6px 0 3px; letter-spacing: 0.5px;
+}
+.inspector-components {
+    display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px;
+}
+.inspector-comp-item {
+    font-size: 9px; padding: 2px 6px; border-radius: 3px;
+    background: var(--bg-3); color: var(--text-2);
+    white-space: nowrap;
+}
+
+/* Selection preview banner (chat area) */
+.selection-preview {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; margin: 0 8px 4px;
+    background: var(--bg-2);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    animation: sel-preview-in 0.2s ease;
+}
+@keyframes sel-preview-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.sel-preview-icon {
+    font-size: 14px; color: var(--accent); flex-shrink: 0;
+}
+.sel-preview-info { flex: 1; min-width: 0; }
+.sel-preview-name {
+    font-size: 12px; font-weight: 700; color: var(--text-1);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sel-preview-detail {
+    font-size: 10px; color: var(--text-3); margin-top: 1px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sel-preview-clear {
+    background: none; border: none; color: var(--text-3);
+    font-size: 12px; cursor: pointer; padding: 2px 4px;
+    border-radius: 3px; flex-shrink: 0;
+}
+.sel-preview-clear:hover { background: var(--bg-hover); color: var(--error); }
 
 /* ── Component Library ───────────────────────── */
 
@@ -1621,3 +1691,527 @@ body {
     color: var(--accent);
     text-align: right;
 }
+
+/* ── GeoBIM Panel ─────────────────────────────────────── */
+.geobim-panel { padding: 8px; }
+.geobim-section { margin-bottom: 12px; }
+.geobim-section-title {
+    font-size: 11px; font-weight: 600; color: var(--text-2);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 6px; padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+.geobim-stats {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 4px; margin-bottom: 8px;
+}
+.geobim-stat {
+    background: var(--bg-2); border-radius: 4px; padding: 6px 8px;
+    display: flex; flex-direction: column;
+}
+.geobim-stat-value { font-size: 16px; font-weight: 700; color: var(--accent); }
+.geobim-stat-label { font-size: 10px; color: var(--text-2); }
+.geobim-building-list {
+    max-height: 300px; overflow-y: auto;
+}
+.geobim-building-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 4px; cursor: pointer;
+    border: 1px solid transparent; transition: all 0.15s;
+}
+.geobim-building-item:hover { background: var(--bg-2); border-color: var(--border); }
+.geobim-building-item.selected { background: var(--bg-3); border-color: var(--accent); }
+.geobim-building-icon {
+    width: 28px; height: 28px; border-radius: 4px;
+    background: linear-gradient(135deg, #00d4a0, #3b8eea);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; flex-shrink: 0;
+}
+.geobim-building-info { flex: 1; min-width: 0; }
+.geobim-building-name { font-size: 12px; font-weight: 600; color: var(--text-0); }
+.geobim-building-meta { font-size: 10px; color: var(--text-2); }
+.geobim-confidence {
+    font-size: 10px; font-weight: 600; padding: 2px 6px;
+    border-radius: 8px; flex-shrink: 0;
+}
+.geobim-confidence.high { background: #00d4a022; color: #00d4a0; }
+.geobim-confidence.medium { background: #ffbe4422; color: #ffbe44; }
+.geobim-confidence.low { background: #ff6b6b22; color: #ff6b6b; }
+
+/* ── Building Inspector (right panel) ─────────────────── */
+.geobim-inspector { padding: 8px; }
+.geobim-inspector-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.geobim-inspector-title { font-size: 14px; font-weight: 700; color: var(--text-0); }
+.geobim-props { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; font-size: 11px; }
+.geobim-prop-key { color: var(--text-2); }
+.geobim-prop-val { color: var(--text-0); font-weight: 500; }
+
+/* ── Measurement Toolbar ──────────────────────────────── */
+.measure-toolbar {
+    position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 4px; padding: 4px 8px;
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: 8px; z-index: 20; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.measure-toolbar.hidden { display: none; }
+.measure-btn {
+    padding: 4px 10px; font-size: 11px; font-weight: 600;
+    background: var(--bg-2); color: var(--text-1); border: 1px solid var(--border);
+    border-radius: 4px; cursor: pointer; transition: all 0.15s;
+}
+.measure-btn:hover { background: var(--bg-3); color: var(--text-0); }
+.measure-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.measure-result {
+    position: absolute; padding: 4px 8px; font-size: 12px; font-weight: 700;
+    background: rgba(0,0,0,0.75); color: #00ffcc; border-radius: 4px;
+    pointer-events: none; white-space: nowrap; z-index: 25;
+}
+.measure-crosshair {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 15;
+    cursor: crosshair;
+}
+
+/* ── GeoBIM Extract Button ────────────────────────────── */
+.geobim-extract-btn {
+    width: 100%; padding: 8px; font-size: 12px; font-weight: 600;
+    background: linear-gradient(135deg, #00d4a0, #3b8eea);
+    color: #fff; border: none; border-radius: 6px; cursor: pointer;
+    transition: opacity 0.15s;
+}
+.geobim-extract-btn:hover { opacity: 0.85; }
+.geobim-extract-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Building Search ──────────────────────────────────── */
+.geobim-search {
+    width: 100%; box-sizing: border-box;
+    padding: 5px 8px; margin-bottom: 6px;
+    background: var(--bg-input); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    font-size: 11px; outline: none;
+}
+.geobim-search:focus { border-color: var(--accent); }
+.geobim-search::placeholder { color: #888; }
+
+/* ── NavMesh / Visibility ─────────────────────────────── */
+.nav-mode-active { border-color: var(--accent) !important; background: var(--accent) !important; color: #fff !important; }
+.geobim-section .measure-btn { font-size: 10px; padding: 3px 8px; }
+
+/* ── HITL Review Queue ────────────────────────────────── */
+.review-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 8px; margin-bottom: 3px;
+    background: var(--bg-2); border-radius: 4px;
+    border-left: 3px solid #ff8844;
+}
+.review-item-info { flex: 1; min-width: 0; }
+.review-item-label { display: block; font-size: 11px; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.review-item-meta { display: block; font-size: 9px; color: var(--text-3); }
+.review-item-actions { display: flex; gap: 3px; flex-shrink: 0; }
+.review-btn {
+    width: 22px; height: 22px; border: none; border-radius: 3px;
+    font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.review-btn.confirm { background: #22aa66; color: white; }
+.review-btn.confirm:hover { background: #33cc77; }
+.review-btn.reject { background: #cc3333; color: white; }
+.review-btn.reject:hover { background: #ee4444; }
+.review-btn.skip { background: var(--bg-3); color: var(--text-2); }
+.review-btn.skip:hover { background: var(--bg-hover); }
+
+/* ── Mesh Edit Panel (unified) ────────────────────────── */
+.meshedit-panel { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+
+/* Stepper */
+.meshedit-stepper {
+    display: flex; align-items: center; gap: 0; padding: 8px 4px;
+    background: var(--bg-2); border-radius: 6px; margin-bottom: 4px;
+}
+.meshedit-step {
+    display: flex; align-items: center; gap: 0; flex: 1;
+}
+.meshedit-step:last-child { flex: 0 0 auto; }
+.meshedit-step-circle {
+    width: 22px; height: 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; flex-shrink: 0;
+    background: var(--bg-3); color: var(--text-3);
+    border: 2px solid var(--border); transition: all 0.25s;
+    cursor: pointer;
+}
+.meshedit-step-circle:hover { border-color: #f5a623; }
+.meshedit-step.active .meshedit-step-circle {
+    background: #f5a623; color: #000; border-color: #f5a623;
+    box-shadow: 0 0 8px rgba(245,166,35,0.4);
+}
+.meshedit-step.done .meshedit-step-circle {
+    background: #22aa66; color: #fff; border-color: #22aa66;
+}
+.meshedit-step-line {
+    flex: 1; height: 2px; background: var(--border); margin: 0 4px;
+    transition: background 0.25s;
+}
+.meshedit-step.done .meshedit-step-line { background: #22aa66; }
+.meshedit-step-label {
+    font-size: 8px; color: var(--text-3); text-align: center;
+    position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%);
+    white-space: nowrap;
+}
+
+/* Step bodies */
+.meshedit-step-body { display: none; }
+.meshedit-step-body.active { display: block; }
+
+/* Section container */
+.meshedit-section {
+    background: var(--bg-2); padding: 10px; border-radius: 4px;
+    border-left: 3px solid #f5a623;
+}
+.meshedit-section-title {
+    font-size: 11px; font-weight: 600; color: var(--text-2);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 8px;
+}
+
+/* Step 1: Load/Scan */
+.meshedit-scan-input {
+    width: 100%; padding: 6px 8px; font-size: 11px;
+    background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border);
+    border-radius: 4px; outline: none; box-sizing: border-box; margin-bottom: 6px;
+}
+.meshedit-scan-input:focus { border-color: #f5a623; }
+.meshedit-stats {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 8px;
+}
+.meshedit-stat-card {
+    background: var(--bg-3); padding: 8px; border-radius: 4px; text-align: center;
+}
+.meshedit-stat-value { font-size: 16px; font-weight: 700; color: #f5a623; }
+.meshedit-stat-label { font-size: 9px; color: var(--text-3); text-transform: uppercase; margin-top: 2px; }
+.meshedit-stat-card.wide { grid-column: 1 / -1; }
+.meshedit-issues { max-height: 150px; overflow-y: auto; font-size: 10px; margin-top: 6px; }
+.meshedit-issue {
+    padding: 4px 6px; margin-bottom: 2px; border-radius: 3px;
+    display: flex; gap: 4px; align-items: flex-start;
+}
+.meshedit-issue.error { background: rgba(204,51,51,0.15); color: #ff6666; }
+.meshedit-issue.warning { background: rgba(245,166,35,0.15); color: #f5a623; }
+.meshedit-issue.info { background: rgba(79,195,247,0.1); color: #4fc3f7; }
+.meshedit-issue-badge {
+    display: inline-block; background: #cc3333; color: #fff; font-size: 9px;
+    padding: 1px 5px; border-radius: 8px; margin-left: 6px;
+}
+
+/* Step 2: Tile Selection */
+.meshedit-search {
+    width: 100%; padding: 5px 8px; font-size: 11px; margin-bottom: 4px;
+    background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border);
+    border-radius: 4px; outline: none; box-sizing: border-box;
+}
+.meshedit-search:focus { border-color: #f5a623; }
+.meshedit-tile-list {
+    max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+}
+.meshedit-tile-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 8px; border-radius: 4px; cursor: pointer;
+    background: var(--bg-3); font-size: 11px; color: var(--text-1);
+    transition: background 0.15s;
+}
+.meshedit-tile-item:hover { background: var(--bg-hover); }
+.meshedit-tile-item.active { background: rgba(245, 166, 35, 0.2); border: 1px solid #f5a623; }
+.meshedit-tile-item .tile-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meshedit-tile-item .tile-tris { font-size: 9px; color: var(--text-3); }
+.meshedit-tile-item .tile-size { font-size: 9px; color: var(--text-3); }
+
+/* Step 3: Preset Cards */
+.meshedit-preset-grid {
+    display: flex; flex-direction: column; gap: 6px;
+}
+.meshedit-preset-card {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px; border-radius: 6px; cursor: pointer;
+    background: var(--bg-3); border: 2px solid transparent;
+    transition: all 0.2s;
+}
+.meshedit-preset-card:hover { border-color: rgba(245,166,35,0.4); background: var(--bg-hover); }
+.meshedit-preset-card.selected { border-color: #f5a623; background: rgba(245,166,35,0.1); box-shadow: 0 0 10px rgba(245,166,35,0.15); }
+.meshedit-preset-icon {
+    font-size: 20px; flex-shrink: 0; width: 32px; text-align: center;
+}
+.meshedit-preset-info { flex: 1; min-width: 0; }
+.meshedit-preset-name {
+    font-size: 12px; font-weight: 700; color: var(--text-1); margin-bottom: 2px;
+}
+.meshedit-preset-desc {
+    font-size: 10px; color: var(--text-3); line-height: 1.3;
+}
+.meshedit-risk-badge {
+    font-size: 8px; font-weight: 700; padding: 2px 6px; border-radius: 8px;
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+}
+.meshedit-risk-badge.safe { background: rgba(34,170,102,0.2); color: #22aa66; }
+.meshedit-risk-badge.moderate { background: rgba(245,166,35,0.2); color: #f5a623; }
+.meshedit-risk-badge.full { background: rgba(204,51,51,0.2); color: #ff6666; }
+
+/* Advanced params (details/summary) */
+.meshedit-params-details { margin-top: 8px; }
+.meshedit-params-details summary {
+    font-size: 10px; color: var(--text-3); cursor: pointer; user-select: none;
+    padding: 4px 0;
+}
+.meshedit-params-details summary:hover { color: #f5a623; }
+.meshedit-params { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.meshedit-param-row { display: flex; align-items: center; gap: 6px; }
+.meshedit-param-label { font-size: 10px; color: var(--text-3); flex: 1; }
+.meshedit-param-input {
+    width: 70px; padding: 3px 6px; font-size: 10px;
+    background: var(--bg-1); color: var(--text-1); border: 1px solid var(--border);
+    border-radius: 3px; text-align: right;
+}
+
+/* Buttons */
+.meshedit-btn {
+    width: 100%; padding: 7px; font-size: 11px; font-weight: 600;
+    background: linear-gradient(135deg, #f5a623, #e8871e);
+    color: #fff; border: none; border-radius: 5px; cursor: pointer;
+    transition: opacity 0.15s;
+}
+.meshedit-btn:hover { opacity: 0.85; }
+.meshedit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.meshedit-btn-secondary { background: var(--bg-3); color: var(--text-2); }
+.meshedit-btn-secondary:hover { background: var(--bg-hover); }
+.meshedit-btn-success { background: linear-gradient(135deg, #22aa66, #1e8c55); }
+.meshedit-btn-back {
+    background: none; border: 1px solid var(--border); color: var(--text-3);
+    font-size: 10px; padding: 5px; width: auto;
+}
+.meshedit-btn-back:hover { border-color: #f5a623; color: #f5a623; }
+
+/* Step 4: Processing */
+.meshedit-stage { font-size: 11px; color: #f5a623; font-weight: 600; margin-bottom: 4px; }
+.meshedit-progress-bar {
+    width: 100%; height: 6px; background: var(--bg-3); border-radius: 3px; overflow: hidden;
+}
+.meshedit-progress-fill {
+    height: 100%; background: linear-gradient(90deg, #f5a623, #22aa66);
+    border-radius: 3px; transition: width 0.3s;
+}
+.meshedit-progress-pct { font-size: 10px; color: var(--text-3); text-align: right; margin-top: 2px; }
+.meshedit-log {
+    max-height: 80px; overflow-y: auto; margin-top: 4px;
+    font-size: 9px; color: var(--text-3); font-family: monospace;
+}
+.meshedit-log .log-entry { padding: 1px 0; border-bottom: 1px solid var(--bg-3); }
+.meshedit-log .log-warning { color: #f5a623; }
+.meshedit-log .log-error { color: #cc3333; }
+
+/* Step 5: Results / Preview */
+.meshedit-comparison {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.meshedit-compare-card {
+    background: var(--bg-3); padding: 8px; border-radius: 4px; text-align: center;
+}
+.meshedit-compare-card.before { border-top: 2px solid var(--text-3); }
+.meshedit-compare-card.after { border-top: 2px solid #22aa66; }
+.meshedit-compare-card .stat-label { font-size: 9px; color: var(--text-3); display: block; margin-bottom: 2px; }
+.meshedit-compare-card .stat-value { font-size: 14px; font-weight: 700; color: var(--text-1); }
+.meshedit-compare-card.after .stat-value { color: #22aa66; }
+.meshedit-warnings {
+    margin-top: 6px; padding: 6px; background: rgba(245,166,35,0.1);
+    border-radius: 4px; border-left: 3px solid #f5a623;
+    font-size: 10px; color: #f5a623;
+}
+.meshedit-validation {
+    margin-top: 6px; padding: 6px; border-radius: 4px; font-size: 10px;
+}
+.meshedit-validation.valid { background: rgba(34,170,102,0.1); color: #22aa66; border-left: 3px solid #22aa66; }
+.meshedit-validation.invalid { background: rgba(204,51,51,0.1); color: #cc3333; border-left: 3px solid #cc3333; }
+
+/* Version History */
+.meshedit-history-details { margin-top: 8px; }
+.meshedit-history-details summary {
+    font-size: 10px; color: var(--text-3); cursor: pointer; user-select: none;
+}
+.meshedit-history-details summary:hover { color: #f5a623; }
+.meshedit-history { display: flex; flex-direction: column; gap: 3px; max-height: 120px; overflow-y: auto; margin-top: 6px; }
+.meshedit-history-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px; border-radius: 3px; background: var(--bg-3);
+    font-size: 10px; color: var(--text-2);
+}
+.meshedit-version-badge {
+    background: #f5a623; color: #000; font-size: 9px; font-weight: 700;
+    padding: 1px 5px; border-radius: 3px;
+}
+.meshedit-history-item .hist-preset { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meshedit-history-item .hist-time { font-size: 9px; color: var(--text-3); }
+.meshedit-history-item .hist-rollback {
+    font-size: 9px; padding: 1px 4px; border: 1px solid #f5a623; background: none;
+    color: #f5a623; border-radius: 3px; cursor: pointer;
+}
+.meshedit-history-item .hist-rollback:hover { background: rgba(245,166,35,0.15); }
+
+/* Recommend card */
+.meshedit-recommend {
+    background: var(--bg-3); padding: 10px; border-radius: 6px; border-left: 3px solid #22aa66;
+    margin-top: 8px;
+}
+.meshedit-recommend-preset { font-size: 13px; font-weight: 700; color: #22aa66; }
+.meshedit-recommend-mode { font-size: 10px; color: #f5a623; margin-top: 2px; }
+.meshedit-recommend-reason { font-size: 10px; color: var(--text-3); margin-top: 4px; line-height: 1.4; }
+
+@keyframes meshedit-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+.meshedit-pulsing { animation: meshedit-pulse 1.5s infinite; }
+
+/* ── Bookmarks Panel ───────────────────────────────────── */
+.bookmark-panel { padding: 8px; }
+.bookmark-toolbar { display: flex; gap: 6px; margin-bottom: 8px; }
+.bookmark-save-btn {
+    flex: 1; padding: 6px 8px; background: #4fc3f7; color: #111;
+    border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;
+}
+.bookmark-save-btn:hover { background: #81d4fa; }
+.bookmark-filter {
+    width: 90px; background: #1a1e2a; border: 1px solid #333; color: #ccc;
+    padding: 4px; border-radius: 4px; font-size: 10px;
+}
+.bookmark-list { max-height: calc(100vh - 160px); overflow-y: auto; }
+.bookmark-item {
+    background: #1a1e2a; padding: 8px; border-radius: 4px; margin-bottom: 4px;
+    cursor: pointer; border-left: 3px solid #4fc3f7; transition: background 0.15s;
+}
+.bookmark-item:hover { background: #222838; }
+.bookmark-item-header { display: flex; justify-content: space-between; align-items: center; }
+.bookmark-item-name { font-size: 11px; font-weight: 600; color: #ccc; }
+.bookmark-item-cat { font-size: 9px; color: #4fc3f7; text-transform: uppercase; }
+.bookmark-item-meta { font-size: 9px; color: #666; margin-top: 3px; }
+.bookmark-item-actions { display: flex; gap: 4px; margin-top: 4px; }
+.bookmark-item-actions button {
+    padding: 2px 6px; font-size: 9px; border: 1px solid #333; background: transparent;
+    color: #8899aa; border-radius: 3px; cursor: pointer;
+}
+.bookmark-item-actions button:hover { background: #333; color: #ccc; }
+.bookmark-item-actions .bookmark-del:hover { background: #cc3333; color: #fff; border-color: #cc3333; }
+
+/* ── Annotation Pins ──────────────────────────────────── */
+.annotation-panel { padding: 8px; }
+.annotation-list { max-height: 300px; overflow-y: auto; }
+.annotation-item {
+    background: #1a1e2a; padding: 6px 8px; border-radius: 4px; margin-bottom: 3px;
+    border-left: 3px solid #f5a623; font-size: 10px;
+}
+.annotation-item-text { color: #ccc; }
+.annotation-item-pos { color: #666; font-size: 9px; margin-top: 2px; }
+.annotation-input {
+    width: 100%; background: #1a1e2a; border: 1px solid #333; color: #ccc;
+    padding: 6px 8px; border-radius: 4px; font-size: 10px; margin-bottom: 4px;
+    box-sizing: border-box; resize: vertical; min-height: 40px;
+}
+.annotation-export-btn {
+    width: 100%; padding: 5px; background: #f5a623; color: #111;
+    border: none; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 600;
+}
+.annotation-export-btn:hover { background: #f7b84d; }
+
+/* ── Performance Monitor ──────────────────────────────── */
+.perf-panel { padding: 8px; }
+.perf-meter {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    background: #1a1e2a; padding: 6px 8px; border-radius: 4px;
+}
+.perf-meter-label { font-size: 9px; color: #8899aa; text-transform: uppercase; width: 60px; }
+.perf-meter-bar { flex: 1; height: 6px; background: #222; border-radius: 3px; overflow: hidden; }
+.perf-meter-fill { height: 100%; border-radius: 3px; transition: width 0.3s, background 0.3s; }
+.perf-meter-value { font-size: 11px; font-weight: 600; width: 50px; text-align: right; }
+.perf-good { color: #22aa66; }
+.perf-warn { color: #f5a623; }
+.perf-bad { color: #cc3333; }
+.perf-suggestions { margin-top: 8px; }
+.perf-suggestion {
+    background: rgba(79,195,247,0.08); padding: 6px 8px; border-radius: 4px;
+    margin-bottom: 3px; font-size: 10px; color: #8899aa; border-left: 3px solid #4fc3f7;
+}
+.perf-suggestion strong { color: #4fc3f7; }
+
+/* ── Tool Mode Panel ───────────────────────────────────── */
+.toolmode-panel {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: #12151e; border-top: 1px solid #333;
+    max-height: 240px; z-index: 20; display: flex; flex-direction: column;
+}
+.toolmode-panel.hidden { display: none; }
+.toolmode-tabs {
+    display: flex; gap: 0; border-bottom: 1px solid #333; flex-shrink: 0;
+}
+.toolmode-tab {
+    padding: 5px 12px; background: transparent; border: none; color: #8899aa;
+    font-size: 11px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent;
+}
+.toolmode-tab.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+.toolmode-tab:hover { color: #ccc; }
+.toolmode-close {
+    padding: 4px 8px; background: transparent; border: none; color: #666;
+    cursor: pointer; font-size: 14px;
+}
+.toolmode-close:hover { color: #cc3333; }
+.toolmode-content { display: none; padding: 6px 8px; overflow-y: auto; flex: 1; }
+.toolmode-content.active { display: flex; flex-direction: column; gap: 6px; }
+.toolmode-tools { display: flex; gap: 4px; flex-wrap: wrap; flex-shrink: 0; }
+.toolmode-results {
+    flex: 1; min-height: 40px; max-height: 120px; overflow-y: auto;
+    background: #0d1017; border-radius: 4px; padding: 4px;
+}
+.toolmode-empty { color: #555; font-size: 10px; text-align: center; padding: 12px 0; }
+.toolmode-result-item {
+    display: flex; justify-content: space-between; padding: 3px 6px;
+    font-size: 10px; border-bottom: 1px solid #1a1e2a;
+}
+.toolmode-result-item .r-type { color: #4fc3f7; font-weight: 500; }
+.toolmode-result-item .r-value { color: #22aa66; font-weight: 600; }
+.toolmode-result-item .r-time { color: #555; }
+.toolmode-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.toolmode-export-btn {
+    flex: 1; padding: 4px 8px; background: #333; color: #ccc; border: none;
+    border-radius: 3px; cursor: pointer; font-size: 10px;
+}
+.toolmode-export-btn:hover { background: #444; }
+.toolmode-path-info { font-size: 10px; }
+.toolmode-path-row {
+    display: flex; justify-content: space-between; padding: 2px 6px;
+    border-bottom: 1px solid #1a1e2a;
+}
+.toolmode-path-row span:first-child { color: #8899aa; }
+.toolmode-path-row span:last-child { color: #ccc; font-weight: 500; }
+.toolmode-vis-config { font-size: 10px; }
+.toolmode-label { color: #8899aa; display: block; margin-bottom: 2px; margin-top: 4px; font-size: 9px; }
+.toolmode-select {
+    width: 100%; background: #1a1e2a; border: 1px solid #333; color: #ccc;
+    padding: 3px 6px; border-radius: 3px; font-size: 10px;
+}
+.toolmode-input {
+    width: 100%; background: #1a1e2a; border: 1px solid #333; color: #ccc;
+    padding: 3px 6px; border-radius: 3px; font-size: 10px; box-sizing: border-box;
+}
+
+/* ── 3D Annotation Pins ──────────────────────────────── */
+.scene-pin {
+    position: absolute; width: 20px; height: 20px; background: #f5a623;
+    border-radius: 50% 50% 50% 0; transform: rotate(-45deg) translate(-50%, -50%);
+    cursor: pointer; z-index: 15; border: 2px solid #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+}
+.scene-pin:hover { background: #ffcc00; transform: rotate(-45deg) translate(-50%, -50%) scale(1.2); }
+.scene-pin-tooltip {
+    position: absolute; bottom: 28px; left: 50%; transform: translateX(-50%);
+    background: #1a1e2a; color: #ccc; padding: 4px 8px; border-radius: 4px;
+    font-size: 10px; white-space: nowrap; pointer-events: none;
+    border: 1px solid #333; display: none;
+}
+.scene-pin:hover .scene-pin-tooltip { display: block; }

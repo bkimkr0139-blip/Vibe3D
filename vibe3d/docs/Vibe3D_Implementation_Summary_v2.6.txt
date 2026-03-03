@@ -1,0 +1,1203 @@
+================================================================================
+  Vibe3D Implementation Summary v2.6
+  AI-Powered Unity 3D Accelerator + GeoBIM Pipeline
+  Date: 2026-03-02
+================================================================================
+
+TABLE OF CONTENTS
+  1. Project Overview
+  2. Architecture Summary
+  3. Code Statistics
+  4. Directory Structure
+  5. Backend (Python/FastAPI)
+     5.1 Core Modules
+     5.2 Drone2Twin Pipeline
+     5.3 GeoBIM Building Extraction
+     5.4 Full API Endpoint Reference (94 endpoints)
+  6. Frontend (HTML/JS/CSS)
+     6.1 UI Layout & Panels
+     6.2 JavaScript Modules
+     6.3 3D Viewer (Three.js)
+  7. Unity C# Scripts
+     7.1 Editor Tools
+     7.2 Runtime Scripts
+  8. Configuration & Build
+  9. Feature Catalog
+  10. Version History
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+Vibe3D is an AI-powered 3D scene accelerator that bridges natural language
+commands to Unity Editor actions via MCP (Model Context Protocol). It provides
+a web-based interface for controlling Unity scenes, analyzing 3D assets,
+running drone photogrammetry pipelines, and extracting building information
+from OBJ tile meshes.
+
+- Web UI:    http://127.0.0.1:8091
+- API Docs:  http://127.0.0.1:8091/docs
+- WebSocket: ws://127.0.0.1:8091/ws
+- MCP:       http://localhost:8080/mcp (Unity Editor)
+
+Key Pipeline:
+  User (Korean/English) --> NLU Engine --> Plan Generator --> Validator
+  --> Approval UI --> Executor --> MCP Batch --> Unity Editor --> Undo Store
+
+================================================================================
+2. ARCHITECTURE SUMMARY
+================================================================================
+
++-------------------+     +-------------------+     +-------------------+
+|   Web Frontend    |<--->|  FastAPI Backend   |<--->|   Unity Editor    |
+|   (Three.js)      | WS  |  (Python 3.12)    | MCP |   (Unity 6 LTS)  |
++-------------------+     +-------------------+     +-------------------+
+  - index.html               - main.py (router)       - 11 C# scripts
+  - app.js (2,865L)           - nlu_engine.py          - CityTileImporter
+  - scene-viewer.js (1,593L)  - plan_generator.py      - LODGenerator
+  - drone-wizard.js (836L)    - executor.py            - TileStreamer
+  - minimap.js (392L)         - scene_cache.py         - BuildingIndex
+  - plan-visual.js (518L)     - geobim_*.py (6 files)  - MeasurementMgr
+  - source-picker.js (462L)   - drone_pipeline/ (22+)  - NavMeshPathfinder
+  - suggest-ui.js (277L)      - component_library.py   - VisibilityAnalyzer
+  - style.css (1,752L)        - fermentation_bridge.py - FloatingOriginMgr
+
+LLM Integration:
+  - Provider: Anthropic Claude (Sonnet 4.5)
+  - Optional: Works without API key (template fallback)
+  - Uses: plan generation, NLU, drawing analysis, chat
+
+================================================================================
+3. CODE STATISTICS
+================================================================================
+
+Language        Files    Lines    Percentage
+-----------------------------------------------
+Python           43     19,629    63.3%
+JavaScript        7      6,943    22.4%
+C# (Unity)       11      2,291     7.4%
+CSS               1      1,752     5.6%
+HTML              1        409     1.3%
+-----------------------------------------------
+TOTAL            63     31,024   100.0%
+
+Supporting Files:
+  - Documentation:  5 files (.md, .txt)  ~120KB
+  - Build/Config:   6 files (.bat, .spec, .ps1, .sh)
+  - Schema:         1 file (unity_plan.schema.json, 27KB)
+  - Data:           geobim.sqlite, workflows.json
+
+API Endpoints:    94 (GET + POST + DELETE)
+Unity Scripts:    11 (3 Editor + 8 Runtime)
+WebSocket Events: plan_preview, plan_completed, plan_rejected, stage_update,
+                  composite_progress, pipeline_progress, tile_progress,
+                  tiles_complete, equipment_selected
+
+================================================================================
+4. DIRECTORY STRUCTURE
+================================================================================
+
+vibe3d/
+|-- __init__.py                    # Package marker
+|-- run.py                         # Entry point (EXE + dev)
+|-- requirements.txt               # pip dependencies
+|-- vibe3d.spec                    # PyInstaller spec (173L)
+|-- build_exe.bat                  # Build script -> dist/Vibe3D.exe
+|-- start.bat                      # Double-click launcher
+|-- create_shortcut.ps1            # Desktop shortcut creator
+|-- .env / .env.example            # Configuration
+|-- README.md                      # Korean usage guide
+|-- Vibe3D_Accelerator_Framework.md  # Framework overview (65KB)
+|
+|-- backend/                       # FastAPI server (14 core files)
+|   |-- main.py                    #   2,116L - routes, WebSocket, orchestration
+|   |-- config.py                  #      67L - env vars, paths
+|   |-- executor.py                #     673L - MCP batch execution, undo
+|   |-- plan_validator.py          #   1,141L - JSON schema + spatial checks
+|   |-- plan_generator.py          #   1,830L - NL -> plan (API + templates)
+|   |-- scene_cache.py             #     588L - hierarchy cache, spatial refs
+|   |-- nlu_engine.py              #     525L - Claude NLU + template fallback
+|   |-- error_analyzer.py          #     598L - 9-category error classification
+|   |-- suggestion_engine.py       #     521L - next-action prediction
+|   |-- source_analyzer.py         #   1,010L - multi-format file analysis
+|   |-- composite_analyzer.py      #     504L - multi-file relationship
+|   |-- workflow_manager.py        #     492L - parameterized workflows
+|   |-- component_library.py       #     607L - industrial equipment templates
+|   |-- fermentation_bridge.py     #     450L - fermentation <-> 3D sync
+|   |-- webgl_builder.py           #     927L - WebGL build plans
+|   |
+|   |-- drone_pipeline/            # Drone2Twin + GeoBIM (22 files)
+|   |   |-- __init__.py
+|   |   |-- router.py              #     431L - /api/drone/* routes
+|   |   |-- models.py              #     233L - project/report data models
+|   |   |-- pipeline_orchestrator.py  # 640L - 6-stage pipeline
+|   |   |-- ingest_qa.py           #     477L - vendor pack/image QA
+|   |   |-- obj_folder_scanner.py  #     229L - OBJ tile scanning
+|   |   |-- optimize_engine.py     #     384L - Blender mesh optimization
+|   |   |-- unity_import_planner.py  #   691L - Unity import plans
+|   |   |-- deployment.py          #     240L - Nginx deployment
+|   |   |-- lod_server.py          #     143L - LOD tile serving
+|   |   |-- perf_reporter.py       #     141L - build performance
+|   |   |-- geobim_models.py       #     258L - building data models
+|   |   |-- geobim_extractor.py    #     563L - RANSAC + DBSCAN extraction
+|   |   |-- geobim_db.py           #     412L - SQLite persistence
+|   |   |-- geobim_pipeline.py     #     199L - 5-stage batch pipeline
+|   |   |-- geobim_collider_proxy.py  # 252L - Blender decimation
+|   |   |-- geobim_export.py       #     129L - JSONL export
+|   |   |-- geobim_simulation.py   #     639L - pathfinding + visibility
+|   |   |-- geobim_router.py       #     407L - /api/drone/geobim/* routes
+|   |   |-- recon_engines/
+|   |   |   |-- base.py            #     136L - abstract ReconEngine
+|   |   |   |-- colmap_adapter.py  #     415L - COLMAP adapter
+|   |
+|   |-- mcp_client/
+|       |-- __init__.py
+|       |-- client.py              # MCP SSE transport client
+|
+|-- frontend/                      # Web UI (9 files, 9,104L)
+|   |-- index.html                 #     409L - 3-column layout
+|   |-- static/
+|       |-- app.js                 #   2,865L - main app (96+ functions)
+|       |-- scene-viewer.js        #   1,593L - Three.js SceneViewer class
+|       |-- style.css              #   1,752L - dark theme (36 sections)
+|       |-- drone-wizard.js        #     836L - 7-step pipeline wizard
+|       |-- plan-visual.js         #     518L - plan card visualization
+|       |-- source-picker.js       #     462L - file analysis picker
+|       |-- minimap.js             #     392L - 2D canvas minimap
+|       |-- suggest-ui.js          #     277L - autocomplete dropdown
+|
+|-- unity-scripts/                 # Unity C# (11 files, 2,291L)
+|   |-- Editor/
+|   |   |-- CityTileImporter.cs          #  366L
+|   |   |-- CityTileLODGenerator.cs      #  491L
+|   |   |-- Vibe3DCityTilePostprocessor.cs # 61L
+|   |-- Runtime/
+|       |-- BuildingIndexManager.cs      #  170L
+|       |-- CityTileStreamer.cs           #  180L
+|       |-- FloatingOriginManager.cs     #  106L
+|       |-- MeasurementManager.cs        #  251L
+|       |-- NavMeshPathfinder.cs         #  197L
+|       |-- SelectionHighlightManager.cs #  153L
+|       |-- UIManager.cs                 #  128L
+|       |-- VisibilityAnalyzer.cs        #  188L
+|
+|-- docs/                          # Documentation
+|   |-- Vibe3D_System_Architecture_v2.4.txt  # 30KB
+|   |-- LOD_TileStreaming_Implementation.txt  # 15KB
+|   |-- equipment-selection-api.md           # 11KB
+|   |-- prompts/examples.txt                 # NLU examples
+|   |-- schemas/unity_plan.schema.json       # 27KB validation schema
+|
+|-- data/                          # Runtime data
+|   |-- geobim.sqlite             # GeoBIM building database
+|   |-- workflows.json            # Workflow definitions
+|   |-- drone_projects/           # Drone project storage
+|
+|-- scripts/                       # Utility scripts
+    |-- start_all_windows.ps1
+    |-- start_all_macos.sh
+    |-- recenter_obj_tiles.py
+
+================================================================================
+5. BACKEND (Python / FastAPI)
+================================================================================
+
+5.1 CORE MODULES
+----------------
+
+[main.py] 2,116 lines — Central Orchestrator
+  - FastAPI app with CORS, static file mounting, WebSocket
+  - 60+ route handlers for command, scene, object, plan, file management
+  - WebSocket broadcast for real-time plan progress
+  - Equipment selection (HeatOps iframe postMessage integration)
+  - Chat endpoint with Claude conversational AI
+  - Component library instantiation (fermenter, valve, pump, HX, etc.)
+  - Drawing (P&ID) analysis endpoint
+  - Undo store with async guard
+
+[executor.py] 673 lines — MCP Execution Engine
+  - Batch MCP command execution with dependency splitting
+  - Undo plan generation (reverse actions for rollback)
+  - Per-action progress callbacks
+  - Error analysis integration
+  - Handles create/modify/delete/color/transform/import actions
+
+[plan_validator.py] 1,141 lines — Plan Validation
+  - JSON schema validation (unity_plan.schema.json)
+  - Per-action-type validation (not oneOf — avoids ambiguity)
+  - Spatial collision detection with existing scene objects
+  - Action dependency validation (modify targets must exist)
+  - Performance budget checks (batch limit: 25)
+  - Safety patterns (forbidden actions list)
+
+[plan_generator.py] 1,830 lines — NL -> Unity Plan
+  - Claude API mode: system prompt with scene context injection
+  - Template mode: 40+ Korean/English pattern matchers
+  - Intent disambiguation (multi-action parsing)
+  - Spatial reference resolution ("옆에", "위에", "아래에")
+  - Color/material extraction from natural language
+  - Delete, move, rotate, scale pattern matching
+
+[scene_cache.py] 588 lines — Scene Context Cache
+  - Singleton TTL-based cache (default 5s)
+  - Recursive hierarchy fetch via MCP
+  - Spatial reference resolution for object placement
+  - Object CRUD tracking (add/remove/modify)
+  - Scene bounds calculation for minimap
+
+[nlu_engine.py] 525 lines — Natural Language Understanding
+  - Claude Sonnet 4.5 as primary NLU
+  - Typo-tolerant Korean/English parsing
+  - Drawing (P&ID image) analysis
+  - Conversational chat with history
+  - Template fallback when API key unavailable
+
+[error_analyzer.py] 598 lines — Error Classification
+  9 error categories:
+    E1_PARSE_FAIL         — invalid action/shape
+    E2_OBJECT_NOT_FOUND   — missing target
+    E3_MCP_DISCONNECTED   — connection lost
+    E4_POSITION_CONFLICT  — spatial overlap
+    E5_SCHEMA_ERROR       — validation failure
+    E6_BATCH_LIMIT        — exceeded 25 actions
+    E7_RECON_FAIL         — reconstruction error
+    E8_OPTIMIZE_FAIL      — optimization error
+    E9_PIPELINE_ERROR     — pipeline stage failure
+  Auto-fix plan generation for E1, E2, E5, E6
+
+[suggestion_engine.py] 521 lines — Predictive Suggestions
+  - Command history analysis (Markov chain)
+  - Next-action prediction based on transition counts
+  - Fermentation-specific suggestions (twin bridge)
+  - Workflow template registration and retrieval
+
+[source_analyzer.py] 1,010 lines — File Analysis
+  Supported formats:
+    - 3D models: FBX, OBJ (vertex/face count, bounding box)
+    - Textures: PNG, JPG (dimensions, power-of-two check)
+    - Data: CSV, JSON, XML
+    - Drawings: PDF, DWG (page estimation)
+  Quality scoring (0-100) with plan generation hints
+
+[composite_analyzer.py] 504 lines — Multi-File Analysis
+  - Filename-based relationship inference
+  - Texture-to-model mapping (diffuse, normal, etc.)
+  - Scene structure tree generation
+  - Merged plan from multiple sources
+
+[component_library.py] 607 lines — Industrial Equipment Templates
+  Templates:
+    - vessel_fermenter    (Fermentation tank with jacket, agitator, sensors)
+    - vessel_feed_tank    (Feed/media tank)
+    - valve_manual        (Manual valve with handle)
+    - pump                (Centrifugal pump with motor)
+    - hx                  (Shell & tube heat exchanger)
+    - prv                 (Pressure relief valve)
+    - probe               (pH/DO/Level/Temp/Pressure sensor)
+    - pipe_run            (Pipe with flanges, JIS sizing)
+    - steam_trap          (Steam trap assembly)
+  Color definitions: STAINLESS, DARK_STEEL, FLANGE_GRAY
+  Pipe sizes: 8A-100A (JIS standard)
+  Medium colors: steam, cws, air, drain, seed, feed, broth, exhaust, nitrogen
+
+[workflow_manager.py] 492 lines — Workflow Templates
+  - JSON-backed persistent storage
+  - Jinja2 template rendering for parameterized actions
+  - Built-in workflows: fermentation, webgl_basic
+  - CRUD operations (create, get, list, update, delete, execute)
+
+[fermentation_bridge.py] 450 lines — Fermentation <-> 3D Sync
+  - Async real-time state synchronization
+  - pH/DO/Temp anomaly -> vessel color mapping
+  - Flow visualization (valve, pump state)
+  - Sensor display updates (probe values)
+  - Twin status reporting
+
+[webgl_builder.py] 927 lines — WebGL Build System
+  - Camera rig plan generation (CameraRig + OrbitPanZoom)
+  - WebGL build configuration (quality, resolution, compression)
+  - Build status monitoring
+
+[config.py] 67 lines — Configuration
+  Environment variables:
+    MCP_SERVER_URL       = http://localhost:8080/mcp
+    MCP_TIMEOUT          = 60
+    VIBE3D_HOST          = 127.0.0.1
+    VIBE3D_PORT          = 8091
+    ANTHROPIC_API_KEY    = (optional)
+    CLAUDE_MODEL         = claude-sonnet-4-5-20250929
+    UNITY_PROJECT_PATH   = C:\UnityProjects\My project
+    DEFAULT_SCENE        = bio-plants
+
+--------------------------------------------------------------------------------
+5.2 DRONE2TWIN PIPELINE
+--------------------------------------------------------------------------------
+
+6-stage pipeline: Ingest -> Recon -> Optimize -> Unity Import -> WebGL -> Deploy
+
+[pipeline_orchestrator.py] 640 lines — Pipeline Manager
+  - Singleton with dependency injection
+  - Project CRUD (create, get, list, delete)
+  - Stage-by-stage execution with progress callbacks
+  - OBJ tile import support (photogrammetry workflow)
+
+[router.py] 431 lines — Drone API Routes
+  17 endpoints under /api/drone/:
+    POST /project/create          — Create new drone project
+    GET  /project/{id}            — Get project details
+    GET  /projects                — List all projects
+    POST /pipeline/run            — Run full pipeline
+    GET  /pipeline/status/{id}    — Get pipeline status
+    POST /ingest/analyze          — Analyze input data
+    POST /recon/run               — Run reconstruction
+    POST /optimize/run            — Optimize meshes
+    POST /unity/import            — Import to Unity
+    POST /webgl/build             — Build WebGL
+    POST /deploy                  — Deploy to Nginx
+    POST /obj-folder/scan         — Scan OBJ folder
+    GET  /reports/{id}            — Get project reports
+    GET  /citytiles               — List city tiles
+    GET  /citytiles-lod           — List LOD metadata
+    GET  /citytiles/{name}/{file} — Serve tile file
+    GET  /citytiles/{name}/LOD/{file} — Serve LOD file
+
+[models.py] 233 lines — Data Models
+  - InputOption: vendor_pack, raw_images, obj_folder
+  - PipelineStage: ingest, recon, optimize, unity_import, webgl_build, deploy
+  - Preset: preview, production
+  - OBJTileInfo, QAReport, ReconReport, OptimizeReport, PerfReport
+  - DroneProject (container with all stage data)
+
+[ingest_qa.py] 477 lines — Ingestion Quality Analysis
+  - Vendor pack detection and parsing
+  - Raw image EXIF analysis (GPS, blur, overlap)
+  - OBJ folder mesh quality checking
+
+[obj_folder_scanner.py] 229 lines — OBJ Folder Scanning
+  - Tile enumeration and grid layout detection
+  - MTL texture reference parsing
+  - Vertex/face count extraction
+
+[optimize_engine.py] 384 lines — Mesh Optimization
+  - Blender headless batch decimation
+  - Stub mode for testing without Blender
+
+[unity_import_planner.py] 691 lines — Unity Import Plans
+  - FBX -> Prefab -> Scene placement plans
+  - OBJ tile import plan generation
+  - Setup-only plans (camera, lighting)
+
+[deployment.py] 240 lines — Nginx Deployment
+  - WebGL build to Nginx static hosting
+  - Auto-generated Nginx configuration
+  - Smoke testing and version management
+
+[lod_server.py] 143 lines — LOD File Server
+  - CityTile LOD file discovery
+  - Metadata generation for web viewer
+
+[perf_reporter.py] 141 lines — Performance Reporter
+  - WebGL build analysis (file sizes, load times)
+  - HTML report generation
+
+[recon_engines/base.py] 136 lines — Abstract Reconstruction Engine
+[recon_engines/colmap_adapter.py] 415 lines — COLMAP Adapter
+
+--------------------------------------------------------------------------------
+5.3 GeoBIM BUILDING EXTRACTION
+--------------------------------------------------------------------------------
+
+5-stage batch pipeline:
+  Stage 0: Ingest OBJ tiles
+  Stage 1: Collider proxy generation (Blender decimation)
+  Stage 2: Building segmentation (RANSAC ground + DBSCAN clustering)
+  Stage 3: Attribute extraction (OBB, footprint, roof planes)
+  Stage 4: Export (JSONL + folder structure)
+
+[geobim_models.py] 258 lines — Data Models
+  - BuildingCandidate: id, tile_id, centroid, height, area, volume,
+    footprint, confidence, tags, roof_planes, obb
+  - RoofPlane: normal, d, area, tilt_deg, azimuth_deg
+  - OBBData: center, axes, half_extents, rotation
+  - SensorParams: position, height, yaw, pitch, hFOV, vFOV, maxDistance
+  - ColliderProxyResult: input_path, output_path, original/simplified face count
+  - PipelineState: stage tracking with timestamps
+  - GeoBIMReport: extraction results with statistics
+
+[geobim_extractor.py] 563 lines — Building Extraction Engine
+  Algorithms:
+    - RANSAC ground plane detection (configurable iterations, threshold)
+    - DBSCAN / grid-based clustering in XZ plane
+    - OBB computation via PCA on convex hull
+    - Convex hull footprint extraction
+    - Roof plane extraction (iterative RANSAC on upper 30% triangles)
+    - Automatic roof_type tag classification:
+        tilt < 5    -> flat
+        tilt < 15   -> low_slope
+        tilt < 35   -> gable
+        else        -> shed
+
+[geobim_db.py] 412 lines — SQLite Database
+  Tables:
+    buildings       — building_id, tile_id, centroid, heights, area, volume,
+                      footprint, confidence, tags, obb, roof_planes
+    collider_proxies — tile_id, input_path, output_path, face counts
+    reports         — timestamp, status, JSON report data
+    review_queue    — building_id, confidence, status, reviewer_label,
+                      reviewed_at, notes (HITL workflow)
+
+  Key Methods:
+    save_buildings(), get_building(), get_buildings(), get_footprints()
+    get_summary(), spatial_query(), clear_all()
+    save_collider_proxy(), get_collider_proxies()
+    save_report(), get_latest_report()
+    populate_review_queue(), get_review_queue()
+    review_building(), get_review_stats()
+
+[geobim_pipeline.py] 199 lines — Batch Pipeline Orchestrator
+  - Sequential stage execution with progress callbacks
+  - Error handling per stage with status tracking
+
+[geobim_collider_proxy.py] 252 lines — Collider Proxy Generator
+  - Blender headless mesh decimation
+  - Batch generation for all tiles
+  - Blender availability check
+
+[geobim_export.py] 129 lines — Data Export
+  - JSONL export (one building per line)
+  - Measurement export (JSON/CSV)
+
+[geobim_simulation.py] 639 lines — Spatial Analysis
+
+  GridPathfinder (A* pathfinding):
+    - Occupancy grid from building footprints
+    - A* search with 8-directional movement
+    - Path smoothing (Douglas-Peucker)
+    - Flood fill (BFS reachable area analysis)
+    - Building interior detection
+    - Grid invalidation on data change
+
+  VisibilityAnalyzer (FOV + raycasting):
+    - 2D ray-marching visibility analysis
+    - Configurable FOV (horizontal angle)
+    - Multi-sensor support
+    - Building footprint segment intersection
+    - Per-building coverage report
+    - Blind spot ratio calculation
+
+[geobim_router.py] 407 lines — GeoBIM API Routes
+  25 endpoints under /api/drone/geobim/:
+    POST /extract                   — Extract buildings from tiles
+    GET  /status                    — Extraction status
+    GET  /buildings                 — List all buildings
+    GET  /buildings/{id}            — Single building detail
+    GET  /footprints                — All footprints (for map overlay)
+    GET  /summary                   — Aggregate statistics
+    GET  /spatial                   — Spatial query (bbox filter)
+    POST /pipeline/run              — Run full 5-stage pipeline
+    GET  /pipeline/status           — Pipeline progress
+    POST /collider/generate         — Generate collider proxies
+    GET  /collider/check-blender    — Check Blender availability
+    GET  /collider/list             — List collider proxies
+    POST /export                    — Export to JSONL
+    GET  /export/jsonl              — Download JSONL file
+    POST /export/measurements       — Export measurements
+    POST /pathfind                  — A* pathfinding
+    POST /pathfind/reset            — Reset pathfinder grid
+    POST /visibility                — Visibility analysis
+    POST /review/populate           — Populate HITL review queue
+    GET  /review/queue              — Get review queue items
+    POST /review/decide             — Submit review decision
+    GET  /review/stats              — Review statistics
+    POST /accessibility             — Flood-fill reachable area
+    POST /visibility/coverage-report — Per-building coverage
+
+--------------------------------------------------------------------------------
+5.4 FULL API ENDPOINT REFERENCE (94 endpoints)
+--------------------------------------------------------------------------------
+
+ METHOD  PATH                                         DESCRIPTION
+ ------  ----                                         -----------
+ GET     /                                            Main web page
+ GET     /favicon.ico                                 Favicon
+
+ --- Core Command & Control ---
+ POST    /api/command                                 Submit NL command
+ POST    /api/command/{job_id}/approve                Approve plan
+ POST    /api/command/{job_id}/reject                 Reject plan
+ POST    /api/execute                                 Execute raw plan
+ POST    /api/multi-command                           Execute multiple commands
+ POST    /api/undo/{job_id}                           Undo executed plan
+ POST    /api/preview                                 Preview plan (dry-run)
+ GET     /api/status                                  Server + MCP status
+ POST    /api/connect                                 Connect to MCP server
+ GET     /api/tools                                   List MCP tools
+ GET     /api/jobs                                    Job history
+ GET     /api/command-history                         Command history
+
+ --- Scene Management ---
+ GET     /api/hierarchy                               Scene hierarchy tree
+ GET     /api/object/inspect                          Inspect object properties
+ POST    /api/object/action                           Modify object (transform/color)
+ POST    /api/scene/save                              Save Unity scene
+ GET     /api/scene/context                           Scene context for AI
+ POST    /api/scene/context/refresh                   Refresh scene cache
+ GET     /api/scene/3d-data                           3D data for web viewer
+ POST    /api/screenshot                              Take Unity screenshot
+ GET     /api/screenshots/latest                      Get latest screenshot
+ GET     /api/console                                 Unity console messages
+
+ --- File Explorer ---
+ GET     /api/files                                   List directory contents
+ GET     /api/files/drives                            List disk drives
+ GET     /api/workdir                                 Get working directory
+ POST    /api/workdir                                 Set working directory
+ POST    /api/workdir/pin                             Pin directory to favorites
+ POST    /api/workdir/unpin                           Unpin directory
+
+ --- AI & Analysis ---
+ POST    /api/chat                                    Chat with Claude AI
+ GET     /api/chat/history                            Chat history
+ POST    /api/chat/clear                              Clear chat history
+ GET     /api/suggest                                 Get suggestions
+ GET     /api/presets                                 List action presets
+ POST    /api/source/analyze                          Analyze source file
+ POST    /api/source/to-plan                          Convert source to plan
+ POST    /api/source/composite-analyze                Multi-file analysis
+ POST    /api/source/composite-plan                   Multi-file plan
+ GET     /api/source/batch                            Batch analysis results
+ POST    /api/drawing/analyze                         Analyze P&ID drawing
+
+ --- Component Library ---
+ GET     /api/components                              List component categories
+ GET     /api/components/{template_id}                Get template details
+ POST    /api/components/instantiate                  Instantiate component
+
+ --- Workflow Engine ---
+ GET     /api/workflows                               List workflows
+ POST    /api/workflows                               Create workflow
+ GET     /api/workflows/{workflow_id}                  Get workflow
+ POST    /api/workflows/{workflow_id}/execute          Execute workflow
+
+ --- Equipment Selection (HeatOps) ---
+ POST    /api/equipment/event                         Equipment event
+ GET     /api/equipment/selected                      Get selected equipment
+
+ --- WebGL Build ---
+ POST    /api/webgl/setup                             Generate WebGL setup plan
+ POST    /api/webgl/build                             Start WebGL build
+ GET     /api/webgl/status                            WebGL build status
+ GET     /api/webgl/build-status                      Detailed build status
+
+ --- Drone2Twin Pipeline ---
+ POST    /api/drone/project/create                    Create drone project
+ GET     /api/drone/project/{project_id}              Get project
+ GET     /api/drone/projects                          List projects
+ POST    /api/drone/pipeline/run                      Run full pipeline
+ GET     /api/drone/pipeline/status/{project_id}      Pipeline status
+ POST    /api/drone/ingest/analyze                    Analyze input data
+ POST    /api/drone/recon/run                         Run reconstruction
+ POST    /api/drone/optimize/run                      Optimize meshes
+ POST    /api/drone/unity/import                      Import to Unity
+ POST    /api/drone/webgl/build                       WebGL build
+ POST    /api/drone/deploy                            Deploy to Nginx
+ POST    /api/drone/obj-folder/scan                   Scan OBJ folder
+ GET     /api/drone/reports/{project_id}              Get reports
+ GET     /api/drone/citytiles                         List city tiles
+ GET     /api/drone/citytiles-lod                     LOD metadata
+ GET     /api/drone/citytiles/{name}/{file}           Serve tile file
+ GET     /api/drone/citytiles/{name}/LOD/{file}       Serve LOD file
+
+ --- GeoBIM Building Extraction ---
+ POST    /api/drone/geobim/extract                    Extract buildings
+ GET     /api/drone/geobim/status                     Extraction status
+ GET     /api/drone/geobim/buildings                  List buildings
+ GET     /api/drone/geobim/buildings/{building_id}    Building detail
+ GET     /api/drone/geobim/footprints                 All footprints
+ GET     /api/drone/geobim/summary                    Statistics
+ GET     /api/drone/geobim/spatial                    Spatial query
+ POST    /api/drone/geobim/pipeline/run               Run batch pipeline
+ GET     /api/drone/geobim/pipeline/status            Pipeline status
+ POST    /api/drone/geobim/collider/generate          Generate colliders
+ GET     /api/drone/geobim/collider/check-blender     Check Blender
+ GET     /api/drone/geobim/collider/list              List colliders
+ POST    /api/drone/geobim/export                     Export buildings
+ GET     /api/drone/geobim/export/jsonl               Download JSONL
+ POST    /api/drone/geobim/export/measurements        Export measurements
+ POST    /api/drone/geobim/pathfind                   A* pathfinding
+ POST    /api/drone/geobim/pathfind/reset             Reset pathfinder
+ POST    /api/drone/geobim/visibility                 Visibility analysis
+ POST    /api/drone/geobim/review/populate            HITL review populate
+ GET     /api/drone/geobim/review/queue               Review queue
+ POST    /api/drone/geobim/review/decide              Review decision
+ GET     /api/drone/geobim/review/stats               Review statistics
+ POST    /api/drone/geobim/accessibility              Flood-fill analysis
+ POST    /api/drone/geobim/visibility/coverage-report Per-building coverage
+
+================================================================================
+6. FRONTEND (HTML / JavaScript / CSS)
+================================================================================
+
+6.1 UI LAYOUT & PANELS
+-----------------------
+
+3-column responsive layout with header, footer, and modals.
+
+HEADER:
+  - Logo + subtitle ("Vibe3D Accelerator")
+  - Toolbar: Screenshot, Save, Undo, Move, Refresh, Play, WebGL, CityTiles, Measure
+  - Status pills: MCP connection, NLU availability
+
+LEFT PANEL (5 tabs):
+  [Explorer]   — File browser with drives, favorites, bookmarks, address bar
+  [Drawing]    — P&ID image drop zone + AI analysis
+  [Presets]    — Action preset cards
+  [Drone2Twin] — 7-step pipeline wizard
+  [GeoBIM]     — Building extraction + analysis + HITL review
+
+  GeoBIM Sub-sections:
+    Pipeline:            Run full pipeline / Extract buildings
+    Stats:               Building count, heights, area
+    Building Search:     Filter detected buildings
+    Building List:       Clickable building cards
+    Simulation/Analysis: Visibility, Coverage, NavMesh, Accessibility buttons
+    HITL Review Queue:   Generate queue, review items (confirm/reject/skip)
+    Export:              JSON, CSV measurement export
+
+CENTER PANEL:
+  [Scene Viewer] — Three.js 3D canvas with toolbar
+    - 3D/Screenshot toggle
+    - Refresh, Auto-refresh
+    - Measurement toolbar (Distance, Height, Area)
+    - Minimap overlay
+  [Execution Progress] — Progress bar with step counter
+  [AI Chat] — Claude conversational interface
+    - Example prompts
+    - Target tag (@tag) input
+    - Suggestion dropdown
+
+RIGHT PANEL (3 tabs):
+  [Hierarchy] — Scene tree with search + inspector
+  [Components] — Equipment template library
+  [Jobs] — Job log + Unity console
+
+FOOTER:
+  MCP URL, Session ID, Status, Job count
+
+MODALS:
+  - Preset parameter dialog
+  - Component detail modal
+
+--------------------------------------------------------------------------------
+6.2 JAVASCRIPT MODULES
+--------------------------------------------------------------------------------
+
+[app.js] 2,865 lines — Main Application Logic
+  96+ functions organized by feature:
+
+  Initialization & Status:
+    checkStatus(), connectMCP(), connectWebSocket(), handleWS()
+
+  Chat & Commands:
+    sendChat(), showApprovalCard(), approvePlan(), rejectPlan()
+    addChatMsg(), clearChat(), showPlanInChat()
+
+  Scene Viewer:
+    setSceneViewMode(), init3DViewer(), refresh3DView()
+    refreshSceneView(), toggleSceneAutoRefresh()
+    hideMinimap(), updateMinimap()
+
+  File Explorer:
+    loadFiles(), navigateUp/Home/ToPath(), loadFavorites(), loadDrives()
+    renderFavorites(), toggleFavorites(), togglePinCurrent()
+    pinDir(), unpinDir(), compositeAnalyze()
+
+  Drawing:
+    loadDrawing(), analyzeDrawing(), clearDrawing()
+
+  Presets:
+    loadPresets(), renderPresets(), showPresetDialog(), applyPreset()
+
+  Components:
+    loadComponents(), renderComponents(), showComponentModal()
+    instantiateComponent()
+
+  Hierarchy & Inspector:
+    refreshHierarchy(), renderTreeNode(), filterHierarchy()
+    inspectObject(), applyInspectorTransform()
+
+  Jobs & Operations:
+    addJob(), updateJob(), takeScreenshot(), saveScene()
+    undoLast(), undoJob(), togglePlay()
+
+  WebGL:
+    webglSetup(), webglBuild(), startWebglBuildPoll(), checkWebglStatus()
+
+  Move/Edit:
+    toggleMoveMode(), deleteSelected(), duplicateSelected(), refreshConsole()
+
+  GeoBIM:
+    geobimExtract(), _pollGeoBIMStatus(), _loadGeoBIMResults()
+    _showGeoBIMStats(), _renderGeoBIMBuildingList()
+    geobimSearchBuildings(), geobimSelectBuilding(), _showBuildingInspector()
+    geobimRunPipeline(), _pollPipelineStatus()
+
+  Measurements:
+    toggleMeasureToolbar(), setMeasureMode(), clearMeasurements()
+    recordMeasurement(), exportMeasurements(), toggleNavMode()
+
+  Analysis:
+    runVisibilityAnalysis(), clearVisibility()
+    runAccessibilityAnalysis(), runCoverageReport()
+    populateReviewQueue(), loadReviewQueue(), _renderReviewQueue()
+    reviewDecide()
+
+  City Tiles:
+    loadCityTiles(), toggleCityTiles()
+
+  Utility:
+    resetExecProgress(), updateActionProgress(), handleStageUpdate()
+    esc(), formatSize(), inferAssetType(), extractTag()
+    notifyEquipmentSelected()
+
+[drone-wizard.js] 836 lines — DroneWizard Class
+  7-step wizard for Drone2Twin pipeline:
+    Step 1: Project creation (name, preset, input option)
+    Step 2: Ingest QA (analyze input data)
+    Step 3: Reconstruction (COLMAP/OpenMVS)
+    Step 4: Optimization (Blender decimation)
+    Step 5: Unity Import (scene setup)
+    Step 6: WebGL Build
+    Step 7: Deploy (Nginx)
+  33 methods including runFullPipeline() for one-click execution
+
+[minimap.js] 392 lines — MinimapRenderer Class
+  - 2D canvas minimap for scene overview
+  - World-to-screen coordinate mapping
+  - Grid overlay with auto-scaling
+  - Object hit testing for click navigation
+  - Color-coded new vs existing objects
+
+[plan-visual.js] 518 lines — PlanVisualizer
+  - Action card timeline rendering
+  - Color-coded action types
+  - Vector3 and color formatting
+  - Approval card integration
+
+[source-picker.js] 462 lines — SourcePicker Class
+  - File quality analysis integration
+  - Quality badge rendering (A/B/C/D grades)
+  - Analysis panel with metrics
+  - "Generate Plan" button integration
+
+[suggest-ui.js] 277 lines — SuggestUI Class
+  - Autocomplete dropdown for chat input
+  - Keyboard navigation (up/down/enter/escape)
+  - Debounced input matching
+  - Dynamic suggestion rendering
+
+--------------------------------------------------------------------------------
+6.3 3D VIEWER (Three.js SceneViewer)
+--------------------------------------------------------------------------------
+
+[scene-viewer.js] 1,593 lines — SceneViewer Class (ES6 Module)
+
+  Three.js WebGL renderer with:
+    - OrbitControls (zoom, pan, rotate)
+    - TransformControls (drag-to-move mode)
+    - Ambient + Directional lighting
+    - Grid helper
+    - Object picking (raycasting)
+
+  50+ methods organized by feature:
+
+  Scene Loading:
+    loadFromAPI()         — Fetch 3D data from backend
+    loadScene(data)       — Render objects from hierarchy
+    _addObject(obj)       — Add single object with material
+    _createGeo(obj)       — Create primitive geometry
+    _inferPrimitive(name) — Name -> shape inference
+    _inferColor(name)     — Name -> material color
+
+  Object Interaction:
+    selectObject(name)           — Highlight and focus
+    _handleClick(event)          — Raycast click detection
+    updateObjectColor(name, c)   — Runtime color update
+    applyPlanColors(actions)     — Batch color application
+
+  Move Mode:
+    setMoveMode(enabled)  — Toggle TransformControls
+    toggleMoveMode()      — UI toggle
+    _onDragEnd()          — Sync position to Unity MCP
+
+  OBJ Tile Loading:
+    loadOBJTiles(tiles)          — Load all tiles (standard)
+    loadOBJTilesWithLOD(tiles)   — Load with LOD system
+    _prepareTileScene(count)     — Scene setup for tiles
+    _loadOBJFromUrl(loader, url) — Async OBJ fetch
+    _startLODUpgradeLoop(loader) — Background LOD upgrade
+    _stopLODUpgradeLoop()        — Cleanup LOD loop
+    _fitCameraToTiles()          — Frame all tiles
+    setTilesVisible(visible)     — Toggle tile visibility
+
+  Building Footprints (GeoBIM):
+    loadFootprints(footprints)       — Render 2D footprint polygons
+    _findBuildingAtPoint(x, z)       — Point-in-polygon lookup
+    _pointInPolygon(x, z, polygon)   — Ray-crossing test
+    _highlightFootprint(buildingId)  — Visual selection
+    clearFootprints()                — Remove all footprints
+    setFootprintsVisible(visible)    — Toggle visibility
+
+  Building BBox Highlight:
+    highlightBuildingBBox(building)   — Wireframe + label + overlay
+    _addBBoxLabel(position, text)     — Sprite text label
+    clearBuildingBBox()               — Remove highlight
+
+  Measurements:
+    setMeasureMode(mode)             — Distance/Height/Area
+    _addMeasurePoint(point)          — Click handler
+    _completeMeasureDistance()       — 2-point distance
+    _completeMeasureHeight()         — Vertical height
+    _completeMeasureArea()           — Polygon area (Shoelace)
+    _drawMeasureLine(a, b, label)    — LineRenderer equivalent
+    _addMeasureLabel(position, text) — In-world text label
+    clearMeasurements()              — Remove all markers
+
+  NavMesh/Pathfinding:
+    renderNavPath(pathPoints, color) — A* path visualization
+    clearNavPath()                   — Remove path
+
+  Visibility Heatmap:
+    renderVisibilityHeatmap(data, gridRes)  — Color-coded grid overlay
+    renderSensorMarkers(sensors)            — Sensor position markers
+    clearVisibilityHeatmap()                — Remove heatmap
+
+  Accessibility Heatmap:
+    renderAccessibilityHeatmap(cells, gridRes, maxTime)
+      — Green->Yellow->Red gradient based on travel time
+      — Green sphere marker at start point
+
+  Floating Origin:
+    _checkFloatingOrigin()  — Large-world coordinate check
+
+================================================================================
+7. UNITY C# SCRIPTS
+================================================================================
+
+7.1 EDITOR TOOLS (3 files, 918 lines)
+--------------------------------------
+
+[CityTileImporter.cs] 366 lines
+  EditorWindow: "Vibe3D/City Tile Importer"
+  Features:
+    - Folder scanning for OBJ/FBX models
+    - Tile ID parsing from filename (regex: tile_(\d+)_(\d+))
+    - World coordinate placement by grid
+    - LODGroup creation (LOD0/LOD1/LOD2 variants)
+    - Collider proxy attachment (FBX/GLB/OBJ)
+    - Static flag setting (Batching + Occludee + Occluder)
+    - BuildingIndexManager auto-attachment
+    - Progress bar UI with Undo registration
+
+[CityTileLODGenerator.cs] 491 lines
+  EditorWindow: "Vibe3D/Generate City Tile LODs"
+  Features:
+    - Vertex Clustering decimation algorithm
+    - 4 LOD levels:
+        LOD0: 100% vertices (screen > 50%)
+        LOD1:  40% vertices (screen > 25%)
+        LOD2:  15% vertices (screen > 5%)
+        LOD3:   0% (culled, screen < 1%)
+    - OBJ file export for web viewer
+    - MeshCollider replacement with LOD2
+    - LODGroup configuration on scene tiles
+    - Mesh asset saving
+
+[Vibe3DCityTilePostprocessor.cs] 61 lines
+  AssetPostprocessor for Assets/CityTiles/ folder
+  Auto-configures:
+    Models: scale=1.0, normals=calculate, compression=medium
+    Textures: maxSize=4096, compression=HQ, mipmaps=on
+
+--------------------------------------------------------------------------------
+7.2 RUNTIME SCRIPTS (8 files, 1,373 lines)
+--------------------------------------------------------------------------------
+
+[BuildingIndexManager.cs] 170 lines
+  MonoBehaviour — Spatial building lookup
+  Features:
+    - JSONL database loading (BuildingRecord)
+    - Spatial hash grid (50m cells) for O(1) lookup
+    - Point-in-footprint test (ray-crossing algorithm)
+    - FindBuildingAtPoint(), FindBuildingFromRaycast()
+    - FindBuildingsNear() radius search
+    - GetBuilding() by ID
+
+[CityTileStreamer.cs] 180 lines
+  MonoBehaviour — Distance-based tile streaming
+  Features:
+    - Camera distance culling with hysteresis
+      (enable: 450m, disable: 550m)
+    - Round-robin frame budget (max 2 changes/frame)
+    - 10 checks/second (0.1s interval)
+    - Gizmo visualization (enable/disable zones)
+
+[FloatingOriginManager.cs] 106 lines
+  MonoBehaviour — Large-world coordinate precision
+  Features:
+    - Shift threshold: 500m from origin
+    - Shifts all root GameObjects when camera drifts
+    - Vector3d (double precision) for absolute offset
+    - LocalToAbsolute() / AbsoluteToLocal() conversion
+
+[MeasurementManager.cs] 251 lines
+  MonoBehaviour — In-scene measurement tools
+  Modes: Distance, Height, Area
+  Features:
+    - Raycast-based point placement
+    - Distance: 2-point line with midpoint label
+    - Height: single-point vertical line to ground
+    - Area: polygon (Shoelace formula) with outline
+    - ExportJson() for measurement data
+    - Visual markers (spheres), lines, TextMesh labels
+
+[NavMeshPathfinder.cs] 197 lines
+  MonoBehaviour — NavMesh-based pathfinding
+  States: Idle -> SetStart -> SetEnd -> Navigating
+  Features:
+    - NavMesh.CalculatePath() for walkable paths
+    - LineRenderer path visualization
+    - Capsule agent animated along path
+    - Path distance calculation
+    - Start/End markers (colored spheres)
+
+[SelectionHighlightManager.cs] 153 lines
+  MonoBehaviour — Building selection visualization
+  Features:
+    - Footprint outline (LineRenderer closed polygon)
+    - BBox wireframe (MeshTopology.Lines cube)
+    - Height label (TextMesh with BillboardLabel)
+    - Auto-clear on new selection
+
+[UIManager.cs] 128 lines
+  MonoBehaviour — Central tool mode controller
+  Modes: Select, Measure_Distance/Height/Area, NavPath, Visibility
+  Hotkeys: 1=Select, 2=Dist, 3=Height, 4=Area, 5=Nav, 6=Vis, Esc=Reset
+  Features:
+    - Mode dispatch to sub-managers
+    - Raycast building selection in Select mode
+    - Building search by query string
+
+[VisibilityAnalyzer.cs] 188 lines
+  MonoBehaviour — Multi-sensor visibility analysis
+  Features:
+    - Multiple SensorConfig support
+    - Grid-based analysis (configurable resolution)
+    - FOV cone filtering (horizontal)
+    - Physics raycast occlusion test
+    - Green (visible) / Red (blind) quad overlay
+    - Coverage ratio reporting
+    - Coroutine with frame budget (500 rays/frame)
+
+Script Dependency Map:
+  UIManager (central dispatcher)
+    +-- BuildingIndexManager (selection raycast)
+    +-- MeasurementManager (mode dispatch)
+    +-- NavMeshPathfinder (mode dispatch)
+    +-- VisibilityAnalyzer (mode dispatch)
+    +-- SelectionHighlightManager (highlight drawing)
+
+  CityTileImporter (Editor) --> BuildingIndexManager (adds component)
+  CityTileLODGenerator (Editor) --> LODGroup (configures)
+  Vibe3DCityTilePostprocessor (Editor) --> Model/Texture import settings
+
+================================================================================
+8. CONFIGURATION & BUILD
+================================================================================
+
+ENVIRONMENT VARIABLES (.env):
+  MCP_SERVER_URL        http://localhost:8080/mcp    Unity MCP server
+  MCP_TIMEOUT           60                           Request timeout (sec)
+  VIBE3D_HOST           127.0.0.1                    Web server bind
+  VIBE3D_PORT           8091                         Web server port
+  ANTHROPIC_API_KEY     (optional)                   Claude API key
+  CLAUDE_MODEL          claude-sonnet-4-5-20250929   LLM model
+  UNITY_PROJECT_PATH    C:\UnityProjects\My project  Unity project
+  DEFAULT_SCENE         bio-plants                   Default scene
+  BLENDER_PATH          blender                      Blender executable
+  COLMAP_PATH           colmap                       COLMAP executable
+  RECON_ENGINE          colmap                       Reconstruction engine
+
+DEPENDENCIES (requirements.txt):
+  fastapi, uvicorn, websockets, httpx, anthropic, aiofiles,
+  python-multipart, jinja2
+
+BUILD (PyInstaller):
+  Build:    build_exe.bat
+  Spec:     vibe3d.spec (173 lines, 48 hidden imports)
+  Output:   dist/Vibe3D/Vibe3D.exe + dist/Vibe3D-win64.zip
+  Includes: Frontend, data, docs, .env, README
+
+LAUNCH:
+  Development:  python -m uvicorn vibe3d.backend.main:app --host 127.0.0.1 --port 8091
+  EXE:          Vibe3D.exe (double-click)
+  Script:       start.bat
+
+================================================================================
+9. FEATURE CATALOG
+================================================================================
+
+A. AI / NLU
+  [x] Korean + English natural language commands
+  [x] Claude Sonnet 4.5 integration (optional)
+  [x] Template fallback (works without API key)
+  [x] Typo-tolerant pattern matching
+  [x] Intent disambiguation
+  [x] Drawing (P&ID) image analysis
+  [x] Conversational chat with history
+  [x] Predictive next-action suggestions
+
+B. Scene Management
+  [x] Object create/modify/delete/duplicate
+  [x] Transform: position, rotation, scale
+  [x] Color/material changes
+  [x] Scene hierarchy tree view
+  [x] Object inspector with transform editing
+  [x] Scene save
+  [x] Screenshot capture
+  [x] Unity console viewer
+  [x] Play/Pause mode control
+
+C. Plan System
+  [x] NL -> structured plan generation
+  [x] Plan preview with approval cards
+  [x] Plan validation (JSON schema + spatial checks)
+  [x] MCP batch execution with dependency splitting
+  [x] Undo/Redo with async guard
+  [x] Error analysis (9 categories) with fix suggestions
+  [x] Multi-command execution
+
+D. 3D Web Viewer
+  [x] Three.js WebGL renderer
+  [x] OrbitControls (zoom, pan, rotate)
+  [x] TransformControls (drag-to-move with Unity sync)
+  [x] Object selection + highlight
+  [x] OBJ tile loading (standard + LOD)
+  [x] LOD upgrade loop (background quality improvement)
+  [x] Building footprint overlay
+  [x] BBox wireframe highlight with height label
+  [x] Measurement tools (distance, height, area)
+  [x] NavMesh path visualization
+  [x] Visibility heatmap (green/red grid)
+  [x] Sensor markers
+  [x] Accessibility heatmap (time-based gradient)
+  [x] Floating origin check
+  [x] Camera preserve on reload
+
+E. File Explorer
+  [x] Directory browsing with path navigation
+  [x] Disk drive listing
+  [x] Favorites/bookmarks (pin/unpin)
+  [x] File type inference (icon + category)
+  [x] Source file analysis (quality scoring)
+  [x] Multi-file composite analysis
+  [x] Drag-and-drop P&ID images
+
+F. Component Library
+  [x] Industrial equipment templates (9 types)
+  [x] Parameterized instantiation
+  [x] Category browsing
+  [x] Template detail modal
+  [x] JIS pipe sizing (8A-100A)
+  [x] Medium-specific colors (steam, cws, air, etc.)
+
+G. Drone2Twin Pipeline
+  [x] Project creation and management
+  [x] 6-stage pipeline (ingest->recon->optimize->import->build->deploy)
+  [x] 7-step wizard UI
+  [x] One-click full pipeline execution
+  [x] OBJ folder scanning with grid detection
+  [x] Vendor pack / raw image ingestion
+  [x] COLMAP reconstruction adapter
+  [x] Blender mesh optimization
+  [x] Unity import plan generation
+  [x] WebGL build with camera rig
+  [x] Nginx deployment
+  [x] Performance reporting
+
+H. GeoBIM Building Extraction
+  [x] RANSAC ground plane detection
+  [x] DBSCAN / grid-based building clustering
+  [x] OBB (Oriented Bounding Box) computation via PCA
+  [x] Convex hull footprint extraction
+  [x] Roof plane extraction (iterative RANSAC)
+  [x] Automatic roof_type classification (flat/gable/low_slope/shed)
+  [x] SQLite persistence with spatial queries
+  [x] Collider proxy generation (Blender decimation)
+  [x] 5-stage batch pipeline orchestration
+  [x] JSONL export for Unity
+  [x] Measurement export (JSON/CSV)
+
+I. Spatial Analysis (GeoBIM)
+  [x] A* grid pathfinding with 8-directional movement
+  [x] Path smoothing (Douglas-Peucker)
+  [x] Building interior detection
+  [x] FOV-based visibility analysis (multi-sensor)
+  [x] Blind spot detection
+  [x] Per-building coverage report
+  [x] Flood-fill accessibility analysis (BFS)
+  [x] Reachable area/time calculation
+
+J. HITL (Human-in-the-Loop) Review
+  [x] Low-confidence building queue (threshold-based)
+  [x] Confirm / Reject / Skip decisions
+  [x] Review statistics dashboard
+  [x] Queue filtering by status
+
+K. Unity Editor Tools (C#)
+  [x] City tile auto-import (OBJ/FBX)
+  [x] Tile ID parsing (regex grid coordinates)
+  [x] LODGroup creation with variants
+  [x] Vertex clustering LOD generation
+  [x] Asset postprocessor (auto-configure imports)
+  [x] Distance-based tile streaming
+  [x] Floating origin for large worlds
+  [x] In-scene measurements (distance/height/area)
+  [x] NavMesh pathfinding with animated agent
+  [x] Multi-sensor visibility analysis
+  [x] Building selection highlight (footprint + BBox + label)
+  [x] Tool mode manager (hotkeys 1-6)
+  [x] Building index with spatial hash grid
+
+L. Integration
+  [x] WebSocket real-time events
+  [x] Equipment selection API (HeatOps iframe postMessage)
+  [x] Asset tag extraction (regex: [A-Z]{1,4}-\d{2,5}[A-Z]?)
+  [x] Fermentation bridge (pH/DO/Temp -> 3D visuals)
+  [x] Workflow templates with Jinja2
+  [x] PyInstaller EXE distribution
+  [x] 2D minimap with object hit testing
+
+================================================================================
+10. VERSION HISTORY
+================================================================================
+
+v1.0  — Base Vibe3D (NL -> Unity MCP, plan generation, template matching)
+v1.5  — Component library, source analysis, workflow engine
+v2.0  — AI-first NLU overhaul, approval workflow, 3D viewer, undo
+v2.1  — Error analyzer, suggestion engine, composite analyzer
+v2.2  — EXE distribution, 3D move mode, target tag UI, undo fix
+v2.3  — Equipment Selection API, WebGL build, tag/type pipeline
+v2.4  — SELECT_OBJECT inbound API, primitive shape fixes, system docs
+v2.5  — LOD auto-generation (vertex clustering), tile streaming system
+v2.6  — GeoBIM pipeline: building extraction (RANSAC+DBSCAN), roof planes,
+         pathfinding (A*), visibility analysis, accessibility (BFS flood-fill),
+         per-building coverage, HITL review queue, Unity editor tools
+         (CityTileImporter, UIManager, SelectionHighlightManager)
+
+Current: v2.6 (2026-03-02)
+Total:   31,024 lines of code | 94 API endpoints | 63 source files
+
+================================================================================
+END OF DOCUMENT
+================================================================================

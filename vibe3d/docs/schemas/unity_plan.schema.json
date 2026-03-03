@@ -114,7 +114,8 @@
         {"$ref": "#/definitions/read_console"},
         {"$ref": "#/definitions/set_object_active"},
         {"$ref": "#/definitions/set_tag_on_object"},
-        {"$ref": "#/definitions/rename_object"}
+        {"$ref": "#/definitions/rename_object"},
+        {"$ref": "#/definitions/mesh_edit_tile"}
       ]
     },
 
@@ -815,6 +816,17 @@
         "target": {"type": "string"},
         "new_name": {"type": "string"},
         "search_method": {"enum": ["by_name", "by_path", "by_id"], "default": "by_name"}
+      }
+    },
+    "mesh_edit_tile": {
+      "type": "object",
+      "required": ["type", "tile_id"],
+      "properties": {
+        "type": {"const": "mesh_edit_tile"},
+        "tile_id": {"type": "string"},
+        "preset": {"enum": ["pack_for_unity", "clean_noise", "decimate_to_target", "generate_lods", "generate_collider_proxy"], "default": "pack_for_unity"},
+        "params": {"type": "object"},
+        "project_dir": {"type": "string"}
       }
     }
   },

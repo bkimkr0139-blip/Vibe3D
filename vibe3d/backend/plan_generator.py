@@ -34,7 +34,7 @@ The plan must follow this structure:
   "actions": [ ... ]
 }
 
-Available action types (63):
+Available action types (64):
 
 --- Basic Object Operations ---
 - create_primitive: {"type":"create_primitive", "shape":"Cube|Sphere|Cylinder|Capsule|Plane|Quad", "name":"...", "parent":"...", "position":{"x":0,"y":0,"z":0}, "rotation":{"x":0,"y":0,"z":0}, "scale":{"x":1,"y":1,"z":1}}
@@ -117,6 +117,9 @@ Available action types (63):
 - create_shader: {"type":"create_shader", "name":"MyShader", "path":"Assets/Shaders", "contents":"Shader \\"Custom/MyShader\\" {...}"}
 - create_scriptable_object: {"type":"create_scriptable_object", "type_name":"MyData", "asset_name":"Data1", "folder_path":"Assets/Data"}
 - modify_scriptable_object: {"type":"modify_scriptable_object", "target":"Assets/Data/Data1.asset", "patches":[{"path":"fieldName","value":42}]}
+
+--- Tile Mesh Editing ---
+- mesh_edit_tile: {"type":"mesh_edit_tile", "tile_id":"tile_0012_0007", "preset":"pack_for_unity|clean_noise|decimate_to_target|generate_lods|generate_collider_proxy", "params":{"target_triangles_lod0":600000,"collider_target_triangles":50000,"min_fragment_area":0.5}}
 
 --- Testing & Utilities ---
 - run_tests: {"type":"run_tests", "mode":"EditMode|PlayMode", "test_names":["MyTest"]}
@@ -1474,6 +1477,46 @@ def generate_plan_template(command: str, scene_context: dict | None = None) -> O
                         "color": color,
                     })
                     return plan
+
+    # ── Tile mesh editing ──────────────────────────────────────
+    tile_edit_match = re.search(
+        r'(tile[_\s]?\d+[_\s]?\d+)\s*.{0,20}'
+        r'(?:경량화|폴리곤|decimate|clean|정리|노이즈|LOD|collider|콜라이더|편집|edit|pack)',
+        command, re.IGNORECASE,
+    )
+    if tile_edit_match:
+        tile_id = re.sub(r'\s+', '_', tile_edit_match.group(1).strip())
+
+        # Detect preset from command
+        preset = "pack_for_unity"
+        if re.search(r'경량화|decimate|폴리곤.*줄|폴리곤.*축소', command, re.IGNORECASE):
+            preset = "decimate_to_target"
+        elif re.search(r'정리|clean|노이즈|잡음|파편', command, re.IGNORECASE):
+            preset = "clean_noise"
+        elif re.search(r'LOD|레벨\s*오브\s*디테일', command, re.IGNORECASE):
+            preset = "generate_lods"
+        elif re.search(r'collider|콜라이더|충돌|물리', command, re.IGNORECASE):
+            preset = "generate_collider_proxy"
+
+        # Extract target polygon count if mentioned
+        params = {}
+        poly_match = re.search(r'(\d+)\s*(?:만|k|K|천)?\s*(?:폴리곤|polygon|triangle|tris|면)', command)
+        if poly_match:
+            val = int(poly_match.group(1))
+            suffix = poly_match.group(0)
+            if '만' in suffix:
+                val *= 10000
+            elif 'k' in suffix.lower() or 'K' in suffix:
+                val *= 1000
+            params["target_triangles_lod0"] = val
+            if preset == "pack_for_unity" or preset == "decimate_to_target":
+                params["target_triangles"] = val
+
+        action = {"type": "mesh_edit_tile", "tile_id": tile_id, "preset": preset}
+        if params:
+            action["params"] = params
+        plan["actions"].append(action)
+        return plan
 
     return None  # Cannot handle with templates
 

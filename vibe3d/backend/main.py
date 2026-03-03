@@ -37,6 +37,11 @@ from .nlu_engine import NLUEngine
 from .component_library import ComponentLibrary
 from .webgl_builder import generate_setup_plan, generate_build_plan
 from .drone_pipeline.router import router as drone_router, get_orchestrator as get_drone_orchestrator
+from .drone_pipeline.geobim_router import router as geobim_router
+from .drone_pipeline.mesh_edit_router import router as mesh_edit_router
+from .drone_pipeline.mesh_edit_manager import get_manager as get_mesh_edit_manager
+from .drone_pipeline.wizard_router import router as wizard_router
+from .drone_pipeline.bookmark_router import router as bookmark_router
 from ..mcp_client import UnityMCPClient
 
 # ── Logging ──────────────────────────────────────────────────
@@ -86,6 +91,10 @@ if frontend_dir.exists():
 
 # ── Drone2Twin Pipeline Router ───────────────────────────────
 app.include_router(drone_router)
+app.include_router(geobim_router)
+app.include_router(mesh_edit_router)
+app.include_router(wizard_router)
+app.include_router(bookmark_router)
 
 # ── State ────────────────────────────────────────────────────
 
@@ -2101,6 +2110,11 @@ async def startup():
         broadcast_fn=broadcast,
     )
     logger.info("Drone2Twin pipeline initialized")
+
+    # Inject dependencies into Mesh Edit manager
+    mesh_edit_mgr = get_mesh_edit_manager()
+    mesh_edit_mgr.set_broadcast(broadcast)
+    logger.info("Mesh Edit manager initialized")
     try:
         if await asyncio.to_thread(mcp_client.initialize):
             logger.info("MCP connected (session: %s)", mcp_client.session_id)

@@ -1,0 +1,267 @@
+================================================================================
+  Vibe3D Implementation Summary v2.7
+  Tile Mesh Edit + Project Wizard + Bookmarks + Performance Monitor
+  Date: 2026-03-02
+================================================================================
+
+Upgrade from v2.6 → v2.7
+Adds tile-level mesh editing via Blender headless batch processing,
+project data wizard, bookmark/work sets, annotations, and performance monitor.
+
+================================================================================
+1. NEW FEATURES SUMMARY
+================================================================================
+
+1.1 Tile Mesh Edit System (P0 — Core)
+    - 5 edit presets: CLEAN_NOISE, DECIMATE_TO_TARGET, GENERATE_LODS,
+      GENERATE_COLLIDER_PROXY, PACK_FOR_UNITY
+    - Async job queue with SQLite persistence
+    - Blender headless worker (subprocess → tile_edit.py)
+    - Preview → Apply 2-step workflow
+    - Edit layer versioning (original tiles READ-ONLY)
+    - Tile boundary vertex preservation during decimation
+    - Seam risk measurement (boundary vertex displacement detection)
+    - Rollback to any version or revert to raw
+    - Version comparison (before/after stats)
+    - Tile validation (missing textures, naming, size)
+    - Quality report generation
+    - NLU integration (Korean + English natural language commands)
+    - WebSocket progress broadcasting (5 event types)
+
+1.2 Project/Data Wizard (P1)
+    - OBJ folder scanning + validation
+    - Tile naming convention check
+    - Missing texture/MTL detection
+    - Polygon/vertex/size statistics
+    - Memory estimation
+    - Recommended preset (performance/balanced/quality)
+    - Preset guide with use cases
+
+1.3 Bookmarks / Work Sets (P1)
+    - Save camera position + target + zoom
+    - Category filtering (general, measurement, review)
+    - Instant camera restore in 3D viewer
+    - SQLite persistence
+    - CRUD REST API
+
+1.4 Annotations & Snapshot Export (P1)
+    - 3D pin placement mode (click-to-place markers on scene)
+    - Pin + memo on 3D view with hover tooltips
+    - Server-side persistence (via bookmarks API, "annotations" category)
+    - Load annotations from server on page load
+    - PNG export of current 3D viewport
+    - PDF/HTML report export (printable annotation summary)
+    - Annotation list in UI
+
+1.5 Performance Auto-Tuner (P1)
+    - Real-time FPS / Memory / Draw Calls / Triangles monitoring
+    - Color-coded meters (green/yellow/red)
+    - Auto-recommendations when thresholds exceeded
+    - Backend metrics integration (tile report → polygon stats)
+    - Auto-preset suggestion (clean_noise / decimate based on metrics)
+    - One-click preset apply from suggestions
+    - Start/Stop toggle with 30s backend polling
+
+1.6 Tool Mode Panel (P1)
+    - Tabbed panel: Measure / Path / Visibility
+    - Measure: distance/angle measurement with results list
+    - Path: start/end point selection + A* pathfinding + distance calc
+    - Visibility: sensor placement + viewshed computation + report export
+    - Toggle via scene toolbar wrench button
+
+1.7 Unity Integration (P0)
+    - TileEditApplier: Scan → Import → SwapLOD → SwapCollider
+    - CityTileStreamer: active_versions.json awareness, auto-reload
+    - NavMesh rebuild menu item (Vibe3D > Rebuild NavMesh)
+    - Edit layer hierarchy setup (BaseLayer / EditLayer)
+    - Gizmo differentiation (orange = edited tiles)
+
+================================================================================
+2. CODE STATISTICS
+================================================================================
+
+New files:           11
+Modified files:       9
+New code lines:    3,765
+Total project:    35,946 lines (46 files)
+API endpoints:       113 (was 94 in v2.6, +19 new)
+
+================================================================================
+3. NEW FILES (11)
+================================================================================
+
+Backend (Python):
+  mesh_edit_models.py       200 lines  Data models (enums, dataclasses)
+  blender_scripts/tile_edit.py 561 lines  Standalone Blender Python script
+  mesh_edit_engine.py       372 lines  Blender subprocess wrapper
+  mesh_edit_manager.py      666 lines  Job queue + SQLite + versioning
+  mesh_edit_router.py       192 lines  13 REST API endpoints
+  tile_validator.py         354 lines  Tile file validation utility
+  wizard_router.py          216 lines  4 wizard API endpoints
+  bookmark_manager.py       214 lines  Bookmark SQLite manager
+  bookmark_router.py        111 lines  5 bookmark CRUD endpoints
+
+Unity (C#):
+  Editor/TileEditApplier.cs 493 lines  Scan/Apply/NavMesh/LayerSetup
+  Runtime/CityTileStreamer.cs 386 lines  Edit-version aware streaming
+
+================================================================================
+4. MODIFIED FILES (9)
+================================================================================
+
+  main.py              +15 lines  Router registration + broadcast injection
+  plan_generator.py    +25 lines  mesh_edit_tile action + template pattern
+  plan_validator.py    +12 lines  mesh_edit_tile handler
+  executor.py          +15 lines  mesh_edit_tile special handler
+  unity_plan.schema.json +20 lines  mesh_edit_tile definition
+  index.html           +100 lines  Wizard tab + Bookmark/Perf/Annotations
+  app.js               +365 lines  Wizard/Bookmark/Annotation/Perf functions
+  style.css            +145 lines  Wizard/Bookmark/Annotation/Perf styles
+  scene-viewer.js      +30 lines   highlightTile() method
+
+================================================================================
+5. API ENDPOINTS (19 new, 113 total)
+================================================================================
+
+5.1 Tile Mesh Edit — /api/mesh/edit/ (13 endpoints)
+  POST   /start                    Start edit job
+  GET    /status/{edit_job_id}     Job stage + progress
+  GET    /preview/{edit_job_id}    Before/after stats
+  POST   /apply/{edit_job_id}     Apply to Unity
+  POST   /cancel/{edit_job_id}    Cancel job
+  GET    /history                  Edit job history
+  GET    /presets                  Available presets + params
+  GET    /check-blender            Blender availability
+  POST   /rollback/{tile_id}/{v}   Rollback to version
+  GET    /versions/{tile_id}      Version list
+  GET    /compare/{tile_id}       Compare two versions
+  GET    /validate/{tile_id}      Validate tile file
+  GET    /report                  Quality report
+
+5.2 Project Wizard — /api/wizard/ (4 endpoints)
+  POST   /scan                     Scan OBJ folder
+  GET    /recommend                Preset recommendation
+  GET    /validate-tile             Single tile validation
+  GET    /presets-info              Detailed preset guide
+
+5.3 Bookmarks — /api/bookmarks/ (5 endpoints, 2 paths)
+  GET    /                         List bookmarks
+  POST   /                         Create bookmark
+  GET    /{bookmark_id}            Get bookmark
+  PUT    /{bookmark_id}            Update bookmark
+  DELETE /{bookmark_id}            Delete bookmark
+
+================================================================================
+6. WEBSOCKET EVENTS (5 new)
+================================================================================
+
+  mesh_edit_started       Job created
+  mesh_edit_progress      Stage change + progress %
+  mesh_edit_preview_ready Processing complete, preview available
+  mesh_edit_applied       Applied to Unity
+  mesh_edit_failed        Error occurred
+
+================================================================================
+7. UI PANELS (4 new tabs)
+================================================================================
+
+Left Panel:
+  [Tile Edit]  — Tile selection, preset config, progress, preview,
+                  version history, rollback, quality report
+  [Wizard]     — Folder scanner, stats dashboard, recommendations,
+                  issue list, tile details, preset guide
+
+Right Panel:
+  [Bookmarks]  — Save/restore camera views, annotations, PNG export
+  [Perf]       — Real-time performance meters + auto-recommendations
+
+================================================================================
+8. UNITY MENU ITEMS (3 new)
+================================================================================
+
+  Vibe3D > Apply Tile Edits          EditorWindow for scan/apply
+  Vibe3D > Rebuild NavMesh           Bake NavMesh for active tiles
+  Vibe3D > Setup Edit Layer Hierarchy Create BaseLayer/EditLayer
+
+================================================================================
+9. BLENDER HEADLESS PRESETS
+================================================================================
+
+Preset               Target              Boundary    Output
+───────────────────   ─────────────────   ─────────   ──────────────
+CLEAN_NOISE           Remove <0.5m² parts No change   LOD0
+DECIMATE_TO_TARGET    100K target tris    Preserved   LOD0
+GENERATE_LODS         LOD0/1/2 ratios     Preserved   LOD0+LOD1+LOD2
+GENERATE_COLLIDER     50K proxy mesh      No change   COLLIDER
+PACK_FOR_UNITY        Full pipeline       Preserved   LOD0+1+2+COLLIDER
+
+================================================================================
+10. DATA/VERSION MANAGEMENT
+================================================================================
+
+/tiles_raw/                          Original OBJ (READ-ONLY)
+/tiles_work/                         Job temporary workspace
+/tiles_edit/
+  /tile_{x}_{y}/
+    /v0001/
+      tile_LOD0.fbx
+      tile_LOD1.fbx
+      tile_LOD2.fbx
+      tile_COLLIDER.fbx
+      manifest.json
+    /v0002/ ...
+  active_versions.json               {tile_id: active_version}
+
+manifest.json contains:
+  - tile_id, version, preset, params
+  - input_stats (faces, vertices, size)
+  - output_stats (LOD0/1/2 faces, collider faces)
+  - quality_flags (seam_risk, warnings)
+  - timing, created_at
+
+================================================================================
+11. NLU INTEGRATION
+================================================================================
+
+Natural language commands (Korean/English) automatically detected:
+  "tile_0012_0007 타일을 60만 폴리곤으로 경량화해줘"
+  "decimate tile_0012_0007 to 600k"
+  "타일 정리" → CLEAN_NOISE
+  "LOD 생성" → GENERATE_LODS
+  "콜라이더 재생성" → GENERATE_COLLIDER_PROXY
+
+Pipeline: NLU → plan_generator (template match) → plan_validator
+  → executor (_mesh_edit_tile handler) → mesh_edit_manager.start_job()
+
+================================================================================
+12. VERSION HISTORY
+================================================================================
+
+v2.7  Tile Mesh Edit + Project Wizard + Bookmarks + Perf Monitor
+        - 11 new files, 9 modified, +3,765 lines
+        - 19 new API endpoints (113 total)
+        - Blender headless batch processing
+        - Edit layer versioning + rollback
+        - Project wizard auto-scan + recommendations
+        - Bookmark/annotation/snapshot system
+        - Performance auto-tuner
+
+v2.6  GeoBIM Building Extraction + Tile Streaming
+        - GeoBIM pipeline (7 modules, 2,100+ lines)
+        - Building footprint extraction from OBJ tiles
+        - SQLite building index + search API
+        - Collider proxy generation (Blender)
+        - LOD auto-generation + tile streaming
+        - 94 API endpoints
+
+v2.5  LOD Auto-Generation + Tile Streaming
+v2.4  SELECT_OBJECT API + Primitive Shape Fixes
+v2.3  Equipment Selection API + WebGL Build
+v2.2  EXE Distribution + 3D Move Mode
+v2.1  Undo System + Explorer Bookmarks
+v2.0  AI-First NLU + Approval Workflow + 3D Viewer
+v1.0  Initial MCP Orchestrator + Plan Validation
+
+================================================================================
+END OF DOCUMENT
+================================================================================

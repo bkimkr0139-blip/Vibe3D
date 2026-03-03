@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vibe3D Unity Accelerator</title>
-    <link rel="stylesheet" href="/static/style.css?v=12">
+    <link rel="stylesheet" href="/static/style.css?v=18">
     <script type="importmap">
     {
         "imports": {
@@ -54,6 +54,9 @@
                     <button class="toolbar-btn" onclick="toggleCityTiles()" title="Load City Tiles 3D" id="cityTilesBtn">
                         <span class="tb-icon">&#127961;</span>
                     </button>
+                    <button class="toolbar-btn" onclick="toggleMeasureToolbar()" title="Measurement Tools" id="measureBtn">
+                        <span class="tb-icon">&#128207;</span>
+                    </button>
                 </div>
             </div>
             <div class="header-right">
@@ -77,7 +80,9 @@
                     <button class="ptab active" data-panel="explorer" onclick="switchPanel('left','explorer')">Explorer</button>
                     <button class="ptab" data-panel="drawing" onclick="switchPanel('left','drawing')">Drawing</button>
                     <button class="ptab" data-panel="presets" onclick="switchPanel('left','presets')">Presets</button>
+                    <button class="ptab" data-panel="meshedit" onclick="switchPanel('left','meshedit')">Mesh Edit</button>
                     <button class="ptab" data-panel="drone" onclick="switchPanel('left','drone')">Drone2Twin</button>
+                    <button class="ptab" data-panel="geobim" onclick="switchPanel('left','geobim')">GeoBIM</button>
                 </div>
 
                 <!-- Explorer -->
@@ -145,6 +150,243 @@
                     <div id="droneWizardContainer"></div>
                 </div>
 
+                <!-- GeoBIM -->
+                <div class="panel-body" id="left-geobim">
+                    <div class="geobim-panel">
+                        <div class="geobim-section">
+                            <div class="geobim-section-title">Pipeline</div>
+                            <button class="geobim-extract-btn" id="geobimPipelineBtn" onclick="geobimRunPipeline()" style="margin-bottom:6px">
+                                Run Full Pipeline (00→40)
+                            </button>
+                            <button class="geobim-extract-btn" id="geobimExtractBtn" onclick="geobimExtract()" style="background:linear-gradient(135deg,#3b8eea,#6c5ce7)">
+                                Extract Buildings Only
+                            </button>
+                            <div class="geobim-stats" id="geobimStats" style="display:none; margin-top:8px">
+                                <div class="geobim-stat">
+                                    <span class="geobim-stat-value" id="geobimBldgCount">0</span>
+                                    <span class="geobim-stat-label">Buildings</span>
+                                </div>
+                                <div class="geobim-stat">
+                                    <span class="geobim-stat-value" id="geobimAvgHeight">0m</span>
+                                    <span class="geobim-stat-label">Avg Height</span>
+                                </div>
+                                <div class="geobim-stat">
+                                    <span class="geobim-stat-value" id="geobimMaxHeight">0m</span>
+                                    <span class="geobim-stat-label">Max Height</span>
+                                </div>
+                                <div class="geobim-stat">
+                                    <span class="geobim-stat-value" id="geobimArea">0m²</span>
+                                    <span class="geobim-stat-label">Total Area</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="geobim-section">
+                            <div class="geobim-section-title">Detected Buildings</div>
+                            <input type="text" class="geobim-search" id="geobimSearchInput"
+                                   placeholder="Search buildings..." oninput="geobimSearchBuildings(this.value)">
+                            <div class="geobim-building-list" id="geobimBuildingList">
+                                <div class="empty-state"><p>Extract buildings first</p></div>
+                            </div>
+                        </div>
+                        <div class="geobim-section">
+                            <div class="geobim-section-title">Simulation / Analysis</div>
+                            <div style="display:flex;gap:4px;flex-wrap:wrap">
+                                <button class="measure-btn" onclick="runVisibilityAnalysis()" title="Visibility/blind-spot analysis">Visibility</button>
+                                <button class="measure-btn" onclick="runCoverageReport()" title="Per-building coverage report">Coverage</button>
+                                <button class="measure-btn" onclick="clearVisibility()" title="Clear heatmap">Clear Vis</button>
+                                <button class="measure-btn" onclick="toggleNavMode()" id="navModeBtn" title="NavMesh path planning">NavMesh</button>
+                                <button class="measure-btn" onclick="runAccessibilityAnalysis()" title="Reachable area analysis">Accessibility</button>
+                            </div>
+                        </div>
+                        <div class="geobim-section">
+                            <div class="geobim-section-title">HITL Review Queue</div>
+                            <button class="measure-btn" onclick="populateReviewQueue()" style="margin-bottom:6px;width:100%">Generate Review Queue</button>
+                            <div id="reviewQueueList" class="geobim-building-list" style="max-height:180px">
+                                <div class="empty-state"><p>Run populate first</p></div>
+                            </div>
+                        </div>
+                        <div class="geobim-section">
+                            <div class="geobim-section-title">Export</div>
+                            <div style="display:flex;gap:4px;flex-wrap:wrap">
+                                <button class="measure-btn" onclick="exportMeasurements('json')" title="Export measurements as JSON">Export JSON</button>
+                                <button class="measure-btn" onclick="exportMeasurements('csv')" title="Export measurements as CSV">Export CSV</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Mesh Edit (unified) -->
+                <div class="panel-body" id="left-meshedit">
+                    <div class="meshedit-panel">
+                        <!-- Step Indicator -->
+                        <div class="meshedit-stepper">
+                            <div class="meshedit-step active" data-step="1">
+                                <div class="meshedit-step-circle" onclick="mesheditGoStep(1)">1</div>
+                                <div class="meshedit-step-line"></div>
+                            </div>
+                            <div class="meshedit-step" data-step="2">
+                                <div class="meshedit-step-circle" onclick="mesheditGoStep(2)">2</div>
+                                <div class="meshedit-step-line"></div>
+                            </div>
+                            <div class="meshedit-step" data-step="3">
+                                <div class="meshedit-step-circle" onclick="mesheditGoStep(3)">3</div>
+                                <div class="meshedit-step-line"></div>
+                            </div>
+                            <div class="meshedit-step" data-step="4">
+                                <div class="meshedit-step-circle" onclick="mesheditGoStep(4)">4</div>
+                                <div class="meshedit-step-line"></div>
+                            </div>
+                            <div class="meshedit-step" data-step="5">
+                                <div class="meshedit-step-circle" onclick="mesheditGoStep(5)">5</div>
+                            </div>
+                        </div>
+
+                        <!-- Step 1: Load / Scan -->
+                        <div class="meshedit-step-body active" id="mesheditStep1">
+                            <div class="meshedit-section">
+                                <div class="meshedit-section-title">Load Tile Data</div>
+                                <p style="font-size:10px;color:var(--text-3);margin-bottom:8px;line-height:1.4">
+                                    Auto-loads tiles from the active project. Or scan a folder manually below.
+                                </p>
+                                <div id="mesheditAutoLoadStatus" style="font-size:10px;color:#f5a623;margin-bottom:6px"></div>
+                                <div class="meshedit-stats" id="mesheditStats" style="display:none"></div>
+                                <details style="margin-top:8px">
+                                    <summary style="font-size:10px;color:var(--text-3);cursor:pointer">Manual Folder Scan</summary>
+                                    <div style="margin-top:6px">
+                                        <input type="text" class="meshedit-scan-input" id="mesheditFolderPath"
+                                               placeholder="C:\tiles\city_01\tiles_raw">
+                                        <button class="meshedit-btn" onclick="mesheditScanFolder()" style="font-size:10px">Scan Folder</button>
+                                    </div>
+                                </details>
+                                <div class="meshedit-issues" id="mesheditIssues" style="display:none"></div>
+                                <div id="mesheditRecommend" style="display:none"></div>
+                            </div>
+                        </div>
+
+                        <!-- Step 2: Select Tile -->
+                        <div class="meshedit-step-body" id="mesheditStep2">
+                            <div class="meshedit-section">
+                                <div class="meshedit-section-title">Select Tile</div>
+                                <input type="text" class="meshedit-search" id="mesheditSearchInput"
+                                       placeholder="Search tiles..." oninput="mesheditFilterTiles(this.value)">
+                                <div class="meshedit-tile-list" id="mesheditTileList">
+                                    <div class="empty-state"><p>Loading tiles...</p></div>
+                                </div>
+                                <div style="display:flex;gap:4px;margin-top:6px">
+                                    <button class="meshedit-btn-back" onclick="mesheditGoStep(1)">Back</button>
+                                    <button class="meshedit-btn meshedit-btn-secondary" onclick="mesheditValidate()" style="flex:0 0 auto;width:70px;font-size:10px" title="Validate selected tile">Validate</button>
+                                </div>
+                                <div id="mesheditValidation" style="display:none"></div>
+                            </div>
+                        </div>
+
+                        <!-- Step 3: Choose Preset -->
+                        <div class="meshedit-step-body" id="mesheditStep3">
+                            <div class="meshedit-section">
+                                <div class="meshedit-section-title">Choose Preset</div>
+                                <div class="meshedit-preset-grid" id="mesheditPresetGrid">
+                                    <div class="meshedit-preset-card" onclick="mesheditSelectPreset('clean_noise')">
+                                        <div class="meshedit-preset-icon">&#128231;</div>
+                                        <div class="meshedit-preset-info">
+                                            <div class="meshedit-preset-name">Clean Noise</div>
+                                            <div class="meshedit-preset-desc">Remove small fragments & loose geometry</div>
+                                        </div>
+                                        <span class="meshedit-risk-badge safe">Safe</span>
+                                    </div>
+                                    <div class="meshedit-preset-card" onclick="mesheditSelectPreset('decimate_to_target')">
+                                        <div class="meshedit-preset-icon">&#128208;</div>
+                                        <div class="meshedit-preset-info">
+                                            <div class="meshedit-preset-name">Decimate</div>
+                                            <div class="meshedit-preset-desc">Reduce to target triangle count</div>
+                                        </div>
+                                        <span class="meshedit-risk-badge moderate">Mod</span>
+                                    </div>
+                                    <div class="meshedit-preset-card" onclick="mesheditSelectPreset('generate_lods')">
+                                        <div class="meshedit-preset-icon">&#127956;</div>
+                                        <div class="meshedit-preset-info">
+                                            <div class="meshedit-preset-name">Generate LODs</div>
+                                            <div class="meshedit-preset-desc">Create LOD0 / LOD1 / LOD2 levels</div>
+                                        </div>
+                                        <span class="meshedit-risk-badge safe">Safe</span>
+                                    </div>
+                                    <div class="meshedit-preset-card" onclick="mesheditSelectPreset('generate_collider_proxy')">
+                                        <div class="meshedit-preset-icon">&#128737;</div>
+                                        <div class="meshedit-preset-info">
+                                            <div class="meshedit-preset-name">Collider Proxy</div>
+                                            <div class="meshedit-preset-desc">Low-poly physics / NavMesh mesh</div>
+                                        </div>
+                                        <span class="meshedit-risk-badge safe">Safe</span>
+                                    </div>
+                                    <div class="meshedit-preset-card" onclick="mesheditSelectPreset('pack_for_unity')">
+                                        <div class="meshedit-preset-icon">&#128230;</div>
+                                        <div class="meshedit-preset-info">
+                                            <div class="meshedit-preset-name">Pack for Unity</div>
+                                            <div class="meshedit-preset-desc">Full pipeline: Clean + LODs + Collider</div>
+                                        </div>
+                                        <span class="meshedit-risk-badge full">Full</span>
+                                    </div>
+                                </div>
+
+                                <details class="meshedit-params-details" id="mesheditParamsDetails" style="display:none">
+                                    <summary>Advanced Parameters</summary>
+                                    <div class="meshedit-params" id="mesheditParams"></div>
+                                </details>
+
+                                <div style="display:flex;gap:4px;margin-top:10px">
+                                    <button class="meshedit-btn-back" onclick="mesheditGoStep(2)">Back</button>
+                                    <button class="meshedit-btn" id="mesheditStartBtn" onclick="mesheditStart()" style="flex:1" disabled>
+                                        Start Edit Job
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 4: Processing -->
+                        <div class="meshedit-step-body" id="mesheditStep4">
+                            <div class="meshedit-section">
+                                <div class="meshedit-section-title">Processing</div>
+                                <div class="meshedit-stage" id="mesheditStage">Queued</div>
+                                <div class="meshedit-progress-bar">
+                                    <div class="meshedit-progress-fill" id="mesheditProgressFill" style="width:0%"></div>
+                                </div>
+                                <div class="meshedit-progress-pct" id="mesheditProgressPct">0%</div>
+                                <div class="meshedit-log" id="mesheditLog"></div>
+                                <div style="margin-top:8px">
+                                    <button class="meshedit-btn meshedit-btn-secondary" id="mesheditCancelBtn" onclick="mesheditCancel()">Cancel Job</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 5: Results -->
+                        <div class="meshedit-step-body" id="mesheditStep5">
+                            <div class="meshedit-section">
+                                <div class="meshedit-section-title">Results (Before / After)</div>
+                                <div class="meshedit-comparison" id="mesheditComparison"></div>
+                                <div class="meshedit-warnings" id="mesheditWarnings" style="display:none"></div>
+                                <div style="display:flex;gap:6px;margin-top:10px">
+                                    <button class="meshedit-btn meshedit-btn-success" onclick="mesheditApply()">Apply to Unity</button>
+                                    <button class="meshedit-btn meshedit-btn-secondary" onclick="mesheditCancel()">Discard</button>
+                                </div>
+                            </div>
+                            <div class="meshedit-section" style="margin-top:8px">
+                                <details class="meshedit-history-details">
+                                    <summary>Version History</summary>
+                                    <div class="meshedit-history" id="mesheditHistory">
+                                        <div class="empty-state"><p>No edits yet</p></div>
+                                    </div>
+                                    <div style="display:flex;gap:4px;margin-top:6px">
+                                        <button class="meshedit-btn meshedit-btn-secondary" onclick="mesheditRollbackToRaw()" style="font-size:10px;flex:1" id="mesheditRollbackRawBtn">Revert to Raw</button>
+                                        <button class="meshedit-btn meshedit-btn-secondary" onclick="mesheditReport()" style="font-size:10px;flex:1">Quality Report</button>
+                                    </div>
+                                </details>
+                            </div>
+                            <div style="margin-top:8px">
+                                <button class="meshedit-btn-back" onclick="mesheditReset()">Edit Another Tile</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="panel-resize" onmousedown="startResize(event,'left')"></div>
             </aside>
 
@@ -159,6 +401,7 @@
                             <button class="view-toggle-btn" data-mode="screenshot" onclick="setSceneViewMode('screenshot')" title="Screenshot">IMG</button>
                         </div>
                         <div style="flex:1"></div>
+                        <button class="icon-btn" onclick="toggleToolModePanel()" title="Tools (Measure/Path/Visibility)" id="toolModeBtn">&#128295;</button>
                         <button class="icon-btn" onclick="refreshSceneView()" title="Refresh" id="sceneRefreshBtn">&#8635;</button>
                         <button class="icon-btn" onclick="toggleSceneAutoRefresh()" title="Auto-refresh" id="autoRefreshBtn">&#9201;</button>
                     </div>
@@ -171,6 +414,75 @@
                             <div class="scene-placeholder" id="scenePlaceholder">
                                 <div class="placeholder-icon">&#127758;</div>
                                 <p>Click refresh to capture scene</p>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Tool Mode Panel (Measure / Path / Visibility) -->
+                    <div class="toolmode-panel hidden" id="toolmodePanel">
+                        <div class="toolmode-tabs">
+                            <button class="toolmode-tab active" data-tab="measure" onclick="switchToolMode('measure')">Measure</button>
+                            <button class="toolmode-tab" data-tab="path" onclick="switchToolMode('path')">Path</button>
+                            <button class="toolmode-tab" data-tab="visibility" onclick="switchToolMode('visibility')">Visibility</button>
+                            <div style="flex:1"></div>
+                            <button class="toolmode-close" onclick="toggleToolModePanel()" title="Close">✕</button>
+                        </div>
+                        <!-- Measure Tab -->
+                        <div class="toolmode-content active" id="toolmode-measure">
+                            <div class="toolmode-tools">
+                                <button class="measure-btn" data-mode="distance" onclick="setMeasureMode('distance')">📏 Distance</button>
+                                <button class="measure-btn" data-mode="height" onclick="setMeasureMode('height')">📐 Height</button>
+                                <button class="measure-btn" data-mode="area" onclick="setMeasureMode('area')">⬡ Area</button>
+                                <button class="measure-btn" onclick="clearMeasurements()">✕ Clear</button>
+                            </div>
+                            <div class="toolmode-results" id="measureResults">
+                                <div class="toolmode-empty">Click a tool above, then click on 3D scene to measure</div>
+                            </div>
+                            <div class="toolmode-actions">
+                                <button class="toolmode-export-btn" onclick="exportMeasurements('json')">Export JSON</button>
+                                <button class="toolmode-export-btn" onclick="exportMeasurements('csv')">Export CSV</button>
+                            </div>
+                        </div>
+                        <!-- Path Tab -->
+                        <div class="toolmode-content" id="toolmode-path">
+                            <div class="toolmode-tools">
+                                <button class="measure-btn" onclick="pathSetStart()">🟢 Set Start</button>
+                                <button class="measure-btn" onclick="pathSetEnd()">🔴 Set End</button>
+                                <button class="measure-btn" onclick="pathCompute()">▶ Find Path</button>
+                                <button class="measure-btn" onclick="pathClear()">✕ Clear</button>
+                            </div>
+                            <div class="toolmode-path-info">
+                                <div class="toolmode-path-row"><span>Start:</span><span id="pathStartLabel">Not set</span></div>
+                                <div class="toolmode-path-row"><span>End:</span><span id="pathEndLabel">Not set</span></div>
+                                <div class="toolmode-path-row"><span>Distance:</span><span id="pathDistLabel">—</span></div>
+                                <div class="toolmode-path-row"><span>Est. Time:</span><span id="pathTimeLabel">—</span></div>
+                            </div>
+                            <div class="toolmode-results" id="pathResults">
+                                <div class="toolmode-empty">Set start/end points on the scene, then click Find Path</div>
+                            </div>
+                        </div>
+                        <!-- Visibility Tab -->
+                        <div class="toolmode-content" id="toolmode-visibility">
+                            <div class="toolmode-tools">
+                                <button class="measure-btn" onclick="visSetSensor()">📷 Place Sensor</button>
+                                <button class="measure-btn" onclick="visCompute()">▶ Analyze</button>
+                                <button class="measure-btn" onclick="visClear()">✕ Clear</button>
+                            </div>
+                            <div class="toolmode-vis-config">
+                                <label class="toolmode-label">Sensor Template</label>
+                                <select class="toolmode-select" id="visSensorTemplate">
+                                    <option value="cctv_90">CCTV 90°</option>
+                                    <option value="cctv_120">CCTV 120°</option>
+                                    <option value="dome_360">Dome 360°</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                                <label class="toolmode-label">Range (m)</label>
+                                <input type="number" class="toolmode-input" id="visRange" value="50" min="1" max="500">
+                            </div>
+                            <div class="toolmode-results" id="visResults">
+                                <div class="toolmode-empty">Place sensors and click Analyze for coverage report</div>
+                            </div>
+                            <div class="toolmode-actions">
+                                <button class="toolmode-export-btn" onclick="visExportReport()">Export Report</button>
                             </div>
                         </div>
                     </div>
@@ -208,6 +520,14 @@
                             </div>
                         </div>
                     </div>
+                    <div class="selection-preview" id="selectionPreview" style="display:none">
+                        <div class="sel-preview-icon">&#9670;</div>
+                        <div class="sel-preview-info">
+                            <div class="sel-preview-name" id="selPreviewName"></div>
+                            <div class="sel-preview-detail" id="selPreviewDetail"></div>
+                        </div>
+                        <button class="sel-preview-clear" onclick="clearTargetTag()" title="Clear selection">&#10005;</button>
+                    </div>
                     <div class="chat-input-area">
                         <div class="suggest-dropdown" id="suggestDropdown" style="display:none"></div>
                         <div class="chat-input-wrap">
@@ -233,6 +553,8 @@
                     <button class="ptab active" data-panel="hierarchy" onclick="switchPanel('right','hierarchy')">Hierarchy</button>
                     <button class="ptab" data-panel="components" onclick="switchPanel('right','components')">Components</button>
                     <button class="ptab" data-panel="jobs" onclick="switchPanel('right','jobs')">Jobs</button>
+                    <button class="ptab" data-panel="bookmarks" onclick="switchPanel('right','bookmarks');bookmarkLoadAll()">Bookmarks</button>
+                    <button class="ptab" data-panel="perf" onclick="switchPanel('right','perf');perfStartMonitor()">Perf</button>
                 </div>
 
                 <!-- Hierarchy + Inspector -->
@@ -280,6 +602,55 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Bookmarks + Annotations -->
+                <div class="panel-body" id="right-bookmarks">
+                    <div class="bookmark-panel">
+                        <div class="bookmark-toolbar">
+                            <button class="bookmark-save-btn" onclick="bookmarkSaveCurrent()">Save Current View</button>
+                            <select class="bookmark-filter" id="bookmarkFilter" onchange="bookmarkLoadAll()">
+                                <option value="">All</option>
+                                <option value="general">General</option>
+                                <option value="measurement">Measurement</option>
+                                <option value="review">Review</option>
+                            </select>
+                        </div>
+                        <div class="bookmark-list" id="bookmarkList">
+                            <div class="empty-state"><p>No bookmarks yet</p></div>
+                        </div>
+                        <div style="margin-top:12px;border-top:1px solid #333;padding-top:8px">
+                            <div style="font-size:11px;font-weight:600;color:#f5a623;margin-bottom:6px">Annotations</div>
+                            <textarea class="annotation-input" id="annotationText" placeholder="Add annotation note..."></textarea>
+                            <div style="display:flex;gap:4px">
+                                <button class="annotation-export-btn" style="flex:1;background:#f5a623" onclick="annotationAdd(document.getElementById('annotationText').value);document.getElementById('annotationText').value=''">Add Note</button>
+                                <button class="annotation-export-btn" style="flex:0 0 55px;background:#22aa66" onclick="annotationStartPinMode()" title="Place pin on 3D scene">Pin</button>
+                            </div>
+                            <div style="display:flex;gap:4px;margin-top:3px">
+                                <button class="annotation-export-btn" style="flex:1;background:#4fc3f7" onclick="annotationExportPNG()">PNG</button>
+                                <button class="annotation-export-btn" style="flex:1;background:#9c27b0;color:#fff" onclick="annotationExportPDF()">Report</button>
+                            </div>
+                            <div class="annotation-list" id="annotationList" style="margin-top:6px">
+                                <div class="empty-state"><p>No annotations</p></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Performance Monitor -->
+                <div class="panel-body" id="right-perf">
+                    <div class="perf-panel">
+                        <div style="font-size:11px;font-weight:600;color:#4fc3f7;margin-bottom:8px">Performance Monitor</div>
+                        <div id="perfMeters">
+                            <div class="empty-state"><p>Monitoring paused</p></div>
+                        </div>
+                        <div class="perf-suggestions" id="perfSuggestions" style="margin-top:10px"></div>
+                        <div style="margin-top:10px;display:flex;gap:4px">
+                            <button class="meshedit-btn" onclick="perfStartMonitor()" style="flex:1;font-size:10px">Start Monitor</button>
+                            <button class="meshedit-btn meshedit-btn-secondary" onclick="perfStopMonitor()" style="flex:1;font-size:10px;background:#cc3333">Stop</button>
+                        </div>
+                    </div>
+                </div>
+
             </aside>
         </main>
 
@@ -326,7 +697,7 @@
     <script src="/static/suggest-ui.js?v=6"></script>
     <script src="/static/source-picker.js?v=6"></script>
     <script src="/static/drone-wizard.js?v=1"></script>
-    <script src="/static/app.js?v=15"></script>
-    <script type="module" src="/static/scene-viewer.js?v=16"></script>
+    <script src="/static/app.js?v=23"></script>
+    <script type="module" src="/static/scene-viewer.js?v=25"></script>
 </body>
 </html>

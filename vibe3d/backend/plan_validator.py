@@ -1138,4 +1138,15 @@ def plan_to_mcp_commands(plan: dict) -> list[dict]:
                 },
             })
 
+        elif action_type == "mesh_edit_tile":
+            # Tile mesh edit — dispatched via REST API (not MCP)
+            commands.append({
+                "tool": "_mesh_edit_tile",
+                "params": {
+                    "tile_id": action.get("tile_id", ""),
+                    "preset": action.get("preset", "pack_for_unity"),
+                    "params": action.get("params", {}),
+                },
+            })
+
     return commands

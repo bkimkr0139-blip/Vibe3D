@@ -16,7 +16,7 @@ class SceneViewer {
         this.controls = null;
         this.transformControls = null;
         this.container = null;
-        this.meshMap = new Map(); // name → mesh
+        this.meshMap = new Map(); // uid (path) → mesh
         this.selectedMesh = null;
         this.selectionOutline = null;
         this.outlineMat = new THREE.MeshBasicMaterial({
@@ -28,7 +28,9 @@ class SceneViewer {
         this._initialized = false;
         this._onResize = this.resize.bind(this);
         this._onClick = this._handleClick.bind(this);
-        this.onSelect = null; // callback(name)
+        this._onPointerDown = this._handlePointerDown.bind(this);
+        this._pointerDownPos = null; // track mousedown for drag detection
+        this.onSelect = null; // callback(name, uid)
         this.onMove = null;   // callback(name, unityPosition) — called after drag
         this._moveMode = false; // toggle between view and move mode
         this._dragStartPos = null; // position before drag (for undo detection)
@@ -37,6 +39,25 @@ class SceneViewer {
         this.onTileProgress = null; // callback(loaded, total)
         this._lodTiles = new Map(); // name → { lod: THREE.LOD, levels: {lod0,lod1,lod2} }
         this._lodMemoryTimer = null; // periodic LOD0 memory cleanup
+        // GeoBIM
+        this._footprintGroup = null;  // Group for building footprint overlays
+        this._measureGroup = null;    // Group for measurement lines/labels
+        this._measureMode = null;     // 'distance' | 'height' | 'area' | null
+        this._measurePoints = [];     // clicked points for current measurement
+        this._measureResults = [];    // completed measurement overlays
+        this.onBuildingClick = null;   // callback(buildingId)
+        this.onMeasure = null;        // callback(mode, result)
+        this._buildingFootprints = []; // cached footprint data
+        // NavMesh / Pathfinding
+        this._navGroup = null;        // Group for nav path overlays
+        this.onNavClick = null;       // callback(point:{x,z})
+        // Visibility heatmap
+        this._visGroup = null;        // Group for visibility heatmap
+        // BBox highlight
+        this._bboxGroup = null;       // Group for building bbox wireframe + height label
+        // Floating Origin
+        this._originOffset = { x: 0, z: 0 };
+        this._floatingOriginThreshold = 500.0;
     }
 
     get initialized() { return this._initialized; }
@@ -73,11 +94,15 @@ class SceneViewer {
         // Orbit Controls
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
-        this.controls.dampingFactor = 0.08;
+        this.controls.dampingFactor = 0.12;
+        this.controls.rotateSpeed = 0.4;
+        this.controls.panSpeed = 0.4;
+        this.controls.zoomSpeed = 0.6;
         this.controls.target.set(0, 1, 0);
-        this.controls.minDistance = 1;
+        this.controls.minDistance = 0.5;
         this.controls.maxDistance = 200;
         this.controls.maxPolarAngle = Math.PI * 0.95;
+        this.controls.screenSpacePanning = true;
 
         // Transform Controls (for drag-to-move)
         this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
@@ -135,8 +160,17 @@ class SceneViewer {
 
         // Events
         window.addEventListener('resize', this._onResize);
+        this.renderer.domElement.addEventListener('pointerdown', this._onPointerDown);
         this.renderer.domElement.addEventListener('click', this._onClick);
+        this.renderer.domElement.addEventListener('dblclick', () => {
+            if (this._measureMode === 'area' && this._measurePoints.length >= 3) {
+                this._completeMeasureArea();
+            }
+        });
         this.renderer.domElement.style.cursor = 'grab';
+
+        // Prevent context menu on right-click (needed for right-drag panning)
+        this.renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
         this._initialized = true;
         this._animate();
@@ -155,6 +189,7 @@ class SceneViewer {
     _animate() {
         this.animId = requestAnimationFrame(() => this._animate());
         if (this.controls) this.controls.update();
+        this._checkFloatingOrigin();
         if (this.renderer && this.scene && this.camera) {
             this.renderer.render(this.scene, this.camera);
         }
@@ -270,8 +305,8 @@ class SceneViewer {
 
         // Re-attach transform controls if in move mode and object still exists
         if (this._moveMode && this.selectedMesh) {
-            const name = this.selectedMesh.userData.objectName;
-            const newMesh = this.meshMap.get(name);
+            const uid = this.selectedMesh.userData.objectUid || this.selectedMesh.userData.objectName;
+            const newMesh = this.meshMap.get(uid);
             if (newMesh) {
                 this.selectedMesh = newMesh;
                 this.transformControls.attach(newMesh);
@@ -318,13 +353,15 @@ class SceneViewer {
 
         mesh.castShadow = !isLight;
         mesh.receiveShadow = !isLight;
+        const uid = obj.path || obj.name;
         mesh.userData.objectName = obj.name;
         mesh.userData.objectPath = obj.path || '';
+        mesh.userData.objectUid = uid;
         mesh.userData.tag = obj.tag || '';
         mesh.userData.type = obj.type || '';
 
         this.scene.add(mesh);
-        this.meshMap.set(obj.name, mesh);
+        this.meshMap.set(uid, mesh);
 
         // Light helper — add a point light at light positions
         if (isLight) {
@@ -406,7 +443,13 @@ class SceneViewer {
      * @param {{r:number, g:number, b:number}} color - RGB color (0-1 range)
      */
     updateObjectColor(name, color) {
-        const mesh = this.meshMap.get(name);
+        // Look up by uid (path) first, fallback to name search
+        let mesh = this.meshMap.get(name);
+        if (!mesh) {
+            for (const m of this.meshMap.values()) {
+                if (m.userData.objectName === name) { mesh = m; break; }
+            }
+        }
         if (!mesh) return false;
         mesh.material.color.setRGB(color.r, color.g, color.b);
         return true;
@@ -429,26 +472,49 @@ class SceneViewer {
 
     // ── Selection ──────────────────────────────────────────
 
-    selectObject(name) {
+    selectObject(uid) {
         if (this.selectionOutline) {
             this.scene.remove(this.selectionOutline);
             this.selectionOutline.geometry.dispose();
             this.selectionOutline = null;
         }
 
-        const mesh = this.meshMap.get(name);
+        // Look up by uid (path) first, fallback to name search, then tile group
+        let mesh = this.meshMap.get(uid);
+        if (!mesh) {
+            for (const m of this.meshMap.values()) {
+                if (m.userData.objectName === uid) { mesh = m; break; }
+            }
+        }
+        if (!mesh && this._tileGroup) {
+            this._tileGroup.traverse(c => {
+                if (!mesh && c.isMesh && (c.userData.objectUid === uid || c.userData.objectName === uid)) {
+                    mesh = c;
+                }
+            });
+        }
         if (!mesh) return;
         this.selectedMesh = mesh;
 
         const outGeo = mesh.geometry.clone();
         this.selectionOutline = new THREE.Mesh(outGeo, this.outlineMat);
-        this.selectionOutline.position.copy(mesh.position);
-        this.selectionOutline.rotation.copy(mesh.rotation);
-        this.selectionOutline.scale.copy(mesh.scale).multiplyScalar(1.06);
+
+        // For tile meshes (nested under parent groups), use world matrix
+        if (mesh.userData.isTileMesh) {
+            mesh.updateWorldMatrix(true, false);
+            this.selectionOutline.applyMatrix4(mesh.matrixWorld);
+            this.selectionOutline.scale.multiplyScalar(1.06);
+        } else {
+            this.selectionOutline.position.copy(mesh.position);
+            this.selectionOutline.rotation.copy(mesh.rotation);
+            this.selectionOutline.scale.copy(mesh.scale).multiplyScalar(1.06);
+        }
         this.scene.add(this.selectionOutline);
 
-        // Smooth look-at
-        this.controls.target.lerp(mesh.position, 0.5);
+        // Gentle focus shift — only nudge orbit target toward selected object
+        const worldPos = new THREE.Vector3();
+        mesh.getWorldPosition(worldPos);
+        this.controls.target.lerp(worldPos, 0.15);
 
         // In move mode, attach transform gizmo to selected object
         if (this._moveMode) {
@@ -458,8 +524,19 @@ class SceneViewer {
         }
     }
 
+    _handlePointerDown(event) {
+        this._pointerDownPos = { x: event.clientX, y: event.clientY };
+    }
+
     _handleClick(event) {
         if (!this.renderer || !this.camera) return;
+
+        // Drag detection: ignore click if mouse moved more than 5px (was a rotate/pan drag)
+        if (this._pointerDownPos) {
+            const dx = event.clientX - this._pointerDownPos.x;
+            const dy = event.clientY - this._pointerDownPos.y;
+            if (dx * dx + dy * dy > 25) return; // 5px threshold squared
+        }
 
         // Don't process clicks on the transform gizmo itself
         if (this.transformControls && this.transformControls.dragging) return;
@@ -469,13 +546,65 @@ class SceneViewer {
         this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
         this.raycaster.setFromCamera(this.pointer, this.camera);
-        const intersects = this.raycaster.intersectObjects(Array.from(this.meshMap.values()));
+
+        // Measurement mode — click on tile mesh or any object to get 3D point
+        if (this._measureMode) {
+            const allTargets = [];
+            if (this._tileGroup) this._tileGroup.traverse(c => { if (c.isMesh) allTargets.push(c); });
+            this.meshMap.forEach(m => allTargets.push(m));
+            const hits = this.raycaster.intersectObjects(allTargets);
+            if (hits.length > 0) {
+                this._addMeasurePoint(hits[0].point.clone());
+            }
+            return;
+        }
+
+        // NavMesh mode — click on tile/ground to get a point
+        if (this.onNavClick) {
+            const allTargets = [];
+            if (this._tileGroup) this._tileGroup.traverse(c => { if (c.isMesh) allTargets.push(c); });
+            this.meshMap.forEach(m => allTargets.push(m));
+            const hits = this.raycaster.intersectObjects(allTargets);
+            if (hits.length > 0) {
+                const pt = hits[0].point;
+                // Convert to world XZ (negate Z for OBJ coords)
+                this.onNavClick({ x: pt.x, z: -pt.z });
+            }
+            return;
+        }
+
+        // Check tile meshes for building footprint click
+        if (this._tileGroup && this._buildingFootprints.length > 0) {
+            const tileTargets = [];
+            this._tileGroup.traverse(c => { if (c.isMesh) tileTargets.push(c); });
+            const tileHits = this.raycaster.intersectObjects(tileTargets);
+            if (tileHits.length > 0) {
+                const pt = tileHits[0].point;
+                const bldg = this._findBuildingAtPoint(pt.x, pt.z);
+                if (bldg && this.onBuildingClick) {
+                    this.onBuildingClick(bldg.id);
+                    this._highlightFootprint(bldg.id);
+                    return;
+                }
+            }
+        }
+
+        // Collect all selectable meshes: meshMap objects + tile group meshes
+        const selectables = Array.from(this.meshMap.values());
+        if (this._tileGroup) {
+            this._tileGroup.traverse(c => {
+                if (c.isMesh && c.userData.objectName) selectables.push(c);
+            });
+        }
+        const intersects = this.raycaster.intersectObjects(selectables);
 
         if (intersects.length > 0) {
-            const name = intersects[0].object.userData.objectName;
-            if (name) {
-                this.selectObject(name);
-                if (this.onSelect) this.onSelect(name);
+            const hit = intersects[0].object;
+            const uid = hit.userData.objectUid || hit.userData.objectName;
+            const name = hit.userData.objectName;
+            if (uid) {
+                this.selectObject(uid);
+                if (this.onSelect) this.onSelect(name, uid);
             }
         } else if (this._moveMode) {
             // Clicking empty space in move mode — deselect
@@ -614,11 +743,15 @@ class SceneViewer {
                     });
                 }
 
-                // Enable shadows
+                // Enable shadows + set userData for selection
                 obj.traverse(child => {
                     if (child.isMesh) {
                         child.castShadow = true;
                         child.receiveShadow = true;
+                        child.userData.objectName = tile.name;
+                        child.userData.objectUid = `CityTiles_Root/${tile.name}/default`;
+                        child.userData.objectPath = `CityTiles_Root/${tile.name}`;
+                        child.userData.isTileMesh = true;
                     }
                 });
 
@@ -847,6 +980,10 @@ class SceneViewer {
                 if (child.isMesh) {
                     child.castShadow = true;
                     child.receiveShadow = true;
+                    child.userData.objectName = name;
+                    child.userData.objectUid = `CityTiles_Root/${name}/default`;
+                    child.userData.objectPath = `CityTiles_Root/${name}`;
+                    child.userData.isTileMesh = true;
                 }
             });
 
@@ -929,6 +1066,550 @@ class SceneViewer {
         }
     }
 
+    // ── GeoBIM: Footprint Overlay ────────────────────────────
+
+    loadFootprints(footprints) {
+        this._buildingFootprints = footprints;
+        if (this._footprintGroup) {
+            this.scene.remove(this._footprintGroup);
+            this._footprintGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); });
+        }
+        this._footprintGroup = new THREE.Group();
+        this._footprintGroup.name = '__geobim_footprints';
+
+        const mat = new THREE.LineBasicMaterial({ color: 0x00ffcc, linewidth: 2, transparent: true, opacity: 0.8 });
+
+        for (const fp of footprints) {
+            if (!fp.footprint || fp.footprint.length < 3) continue;
+            const pts = fp.footprint.map(p => new THREE.Vector3(p[0], 0.5, -p[1])); // Y-up, negate Z
+            pts.push(pts[0]); // close loop
+            const geo = new THREE.BufferGeometry().setFromPoints(pts);
+            const line = new THREE.Line(geo, mat.clone());
+            line.userData.buildingId = fp.id;
+            line.userData.label = fp.label;
+            this._footprintGroup.add(line);
+        }
+
+        this.scene.add(this._footprintGroup);
+        console.log(`[SceneViewer] Loaded ${footprints.length} building footprints`);
+    }
+
+    _findBuildingAtPoint(x, z) {
+        // z is in Three.js coords (negated from OBJ), convert back for footprint test
+        const testZ = -z;
+        for (const fp of this._buildingFootprints) {
+            if (!fp.footprint || fp.footprint.length < 3) continue;
+            if (this._pointInPolygon(x, testZ, fp.footprint)) return fp;
+        }
+        return null;
+    }
+
+    _pointInPolygon(x, z, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i][0], zi = polygon[i][1];
+            const xj = polygon[j][0], zj = polygon[j][1];
+            const intersect = ((zi > z) !== (zj > z)) && (x < (xj - xi) * (z - zi) / (zj - zi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    _highlightFootprint(buildingId) {
+        if (!this._footprintGroup) return;
+        this._footprintGroup.children.forEach(line => {
+            const isTarget = line.userData.buildingId === buildingId;
+            line.material.color.setHex(isTarget ? 0xffbe44 : 0x00ffcc);
+            line.material.opacity = isTarget ? 1.0 : 0.8;
+        });
+    }
+
+    // ── BBox Wireframe Highlight (Section 4.4/4.5) ─────────
+
+    highlightBuildingBBox(building) {
+        this.clearBuildingBBox();
+        if (!building || !building.bbox_min || !building.bbox_max) return;
+
+        this._bboxGroup = new THREE.Group();
+        this._bboxGroup.name = '__building_bbox';
+
+        const bmin = building.bbox_min;
+        const bmax = building.bbox_max;
+
+        // Create wireframe box from bbox_aabb (Unity coords → Three.js: negate Z)
+        const boxGeo = new THREE.BoxGeometry(
+            bmax[0] - bmin[0],
+            bmax[1] - bmin[1],
+            bmax[2] - bmin[2]
+        );
+        const edges = new THREE.EdgesGeometry(boxGeo);
+        const lineMat = new THREE.LineBasicMaterial({
+            color: 0xffbe44, linewidth: 2, transparent: true, opacity: 0.9,
+        });
+        const wireframe = new THREE.LineSegments(edges, lineMat);
+        wireframe.position.set(
+            (bmin[0] + bmax[0]) / 2,
+            (bmin[1] + bmax[1]) / 2,
+            -((bmin[2] + bmax[2]) / 2)  // negate Z
+        );
+        this._bboxGroup.add(wireframe);
+
+        // Height label at top center
+        const heightMax = building.height_max || building.height || 0;
+        const topY = bmax[1];
+        const labelPos = new THREE.Vector3(
+            (bmin[0] + bmax[0]) / 2,
+            topY + 1.5,
+            -((bmin[2] + bmax[2]) / 2)
+        );
+        const labelText = `${building.label || 'Building'}\n${heightMax.toFixed(1)}m`;
+        this._addBBoxLabel(labelPos, labelText);
+
+        // Semi-transparent fill for top face
+        const topGeo = new THREE.PlaneGeometry(bmax[0] - bmin[0], bmax[2] - bmin[2]);
+        topGeo.rotateX(-Math.PI / 2);
+        const topMat = new THREE.MeshBasicMaterial({
+            color: 0xffbe44, transparent: true, opacity: 0.15, side: THREE.DoubleSide,
+        });
+        const topMesh = new THREE.Mesh(topGeo, topMat);
+        topMesh.position.set(
+            (bmin[0] + bmax[0]) / 2,
+            topY,
+            -((bmin[2] + bmax[2]) / 2)
+        );
+        this._bboxGroup.add(topMesh);
+
+        this.scene.add(this._bboxGroup);
+    }
+
+    _addBBoxLabel(position, text) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 96;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.roundRect(4, 4, 248, 88, 8);
+        ctx.fill();
+        ctx.strokeStyle = '#ffbe44';
+        ctx.lineWidth = 2;
+        ctx.roundRect(4, 4, 248, 88, 8);
+        ctx.stroke();
+        ctx.fillStyle = '#ffbe44';
+        ctx.font = 'bold 22px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const lines = text.split('\n');
+        lines.forEach((line, i) => {
+            ctx.fillText(line, 128, 30 + i * 32);
+        });
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.position.copy(position);
+        sprite.scale.set(5, 2, 1);
+        this._bboxGroup.add(sprite);
+    }
+
+    clearBuildingBBox() {
+        if (this._bboxGroup) {
+            this.scene.remove(this._bboxGroup);
+            this._bboxGroup.traverse(c => {
+                if (c.geometry) c.geometry.dispose();
+                if (c.material) {
+                    if (c.material.map) c.material.map.dispose();
+                    c.material.dispose();
+                }
+            });
+            this._bboxGroup = null;
+        }
+    }
+
+    clearFootprints() {
+        if (this._footprintGroup) {
+            this.scene.remove(this._footprintGroup);
+            this._footprintGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); });
+            this._footprintGroup = null;
+        }
+        this._buildingFootprints = [];
+    }
+
+    setFootprintsVisible(visible) {
+        if (this._footprintGroup) this._footprintGroup.visible = visible;
+    }
+
+    // ── Measurement Mode ──────────────────────────────────────
+
+    setMeasureMode(mode) {
+        this._measureMode = mode; // 'distance' | 'height' | 'area' | null
+        this._measurePoints = [];
+        if (mode) {
+            this.renderer.domElement.style.cursor = 'crosshair';
+        } else {
+            this.renderer.domElement.style.cursor = this._moveMode ? 'crosshair' : 'grab';
+        }
+    }
+
+    _addMeasurePoint(point) {
+        this._measurePoints.push(point);
+        this._drawMeasureMarker(point);
+
+        const mode = this._measureMode;
+        if (mode === 'distance' && this._measurePoints.length === 2) {
+            this._completeMeasureDistance();
+        } else if (mode === 'height' && this._measurePoints.length === 1) {
+            this._completeMeasureHeight();
+        } else if (mode === 'area' && this._measurePoints.length >= 3) {
+            // Area: double-click or 6 points to close
+            if (this._measurePoints.length >= 6) {
+                this._completeMeasureArea();
+            }
+        }
+    }
+
+    completeMeasureArea() {
+        if (this._measureMode === 'area' && this._measurePoints.length >= 3) {
+            this._completeMeasureArea();
+        }
+    }
+
+    _drawMeasureMarker(point) {
+        if (!this._measureGroup) {
+            this._measureGroup = new THREE.Group();
+            this._measureGroup.name = '__measure_overlay';
+            this.scene.add(this._measureGroup);
+        }
+        const geo = new THREE.SphereGeometry(0.3, 8, 8);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
+        const sphere = new THREE.Mesh(geo, mat);
+        sphere.position.copy(point);
+        this._measureGroup.add(sphere);
+    }
+
+    _completeMeasureDistance() {
+        const [a, b] = this._measurePoints;
+        const dist = a.distanceTo(b);
+        this._drawMeasureLine(a, b, `${dist.toFixed(2)}m`);
+        if (this.onMeasure) this.onMeasure('distance', { distance: dist, points: [a, b] });
+        this._measurePoints = [];
+    }
+
+    _completeMeasureHeight() {
+        const p = this._measurePoints[0];
+        // Height from ground (Y=0) to point
+        const groundPt = new THREE.Vector3(p.x, 0, p.z);
+        const height = Math.abs(p.y);
+        this._drawMeasureLine(groundPt, p, `${height.toFixed(2)}m`);
+        if (this.onMeasure) this.onMeasure('height', { height, point: p });
+        this._measurePoints = [];
+    }
+
+    _completeMeasureArea() {
+        const pts = this._measurePoints;
+        // Calculate area using shoelace formula on XZ plane
+        let area = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length;
+            area += pts[i].x * pts[j].z;
+            area -= pts[j].x * pts[i].z;
+        }
+        area = Math.abs(area) / 2;
+
+        // Draw polygon outline
+        const linePts = pts.map(p => p.clone());
+        linePts.push(pts[0].clone());
+        const geo = new THREE.BufferGeometry().setFromPoints(linePts);
+        const mat = new THREE.LineBasicMaterial({ color: 0x00ff88, linewidth: 2 });
+        const line = new THREE.Line(geo, mat);
+        this._measureGroup.add(line);
+
+        // Label at centroid
+        const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+        const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+        const cz = pts.reduce((s, p) => s + p.z, 0) / pts.length;
+        this._addMeasureLabel(new THREE.Vector3(cx, cy + 1, cz), `${area.toFixed(2)}m²`);
+
+        if (this.onMeasure) this.onMeasure('area', { area, points: pts });
+        this._measurePoints = [];
+        this._measureMode = null;
+    }
+
+    _drawMeasureLine(a, b, label) {
+        if (!this._measureGroup) {
+            this._measureGroup = new THREE.Group();
+            this._measureGroup.name = '__measure_overlay';
+            this.scene.add(this._measureGroup);
+        }
+        const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
+        const mat = new THREE.LineBasicMaterial({ color: 0xff6600, linewidth: 2 });
+        const line = new THREE.Line(geo, mat);
+        this._measureGroup.add(line);
+
+        const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+        mid.y += 0.5;
+        this._addMeasureLabel(mid, label);
+    }
+
+    _addMeasureLabel(position, text) {
+        // Use a sprite with canvas-rendered text
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.roundRect(0, 0, 256, 64, 8);
+        ctx.fill();
+        ctx.fillStyle = '#00ffcc';
+        ctx.font = 'bold 28px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, 128, 32);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.position.copy(position);
+        sprite.scale.set(4, 1, 1);
+        this._measureGroup.add(sprite);
+    }
+
+    clearMeasurements() {
+        if (this._measureGroup) {
+            this.scene.remove(this._measureGroup);
+            this._measureGroup.traverse(c => {
+                if (c.geometry) c.geometry.dispose();
+                if (c.material) {
+                    if (c.material.map) c.material.map.dispose();
+                    c.material.dispose();
+                }
+            });
+            this._measureGroup = null;
+        }
+        this._measurePoints = [];
+        this._measureResults = [];
+    }
+
+    // ── NavMesh Path Visualization (Section 4.7) ───────────
+
+    renderNavPath(pathPoints, color = 0x00ff88) {
+        this.clearNavPath();
+        if (!pathPoints || pathPoints.length < 2) return;
+
+        this._navGroup = new THREE.Group();
+        this._navGroup.name = '__nav_path';
+
+        // Convert [x,z] path to 3D points (Y slightly above ground)
+        const pts3d = pathPoints.map(p => new THREE.Vector3(p[0], 0.6, -p[1]));
+
+        // Tube-like path using cylinder segments
+        for (let i = 0; i < pts3d.length - 1; i++) {
+            const a = pts3d[i], b = pts3d[i + 1];
+            const dir = new THREE.Vector3().subVectors(b, a);
+            const len = dir.length();
+            if (len < 0.01) continue;
+
+            const geo = new THREE.CylinderGeometry(0.15, 0.15, len, 6);
+            geo.rotateX(Math.PI / 2);
+            const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8 });
+            const cyl = new THREE.Mesh(geo, mat);
+            cyl.position.copy(a).add(b).multiplyScalar(0.5);
+            cyl.lookAt(b);
+            this._navGroup.add(cyl);
+        }
+
+        // Start marker (green sphere)
+        const startGeo = new THREE.SphereGeometry(0.5, 12, 12);
+        const startMat = new THREE.MeshBasicMaterial({ color: 0x44ff44 });
+        const startMesh = new THREE.Mesh(startGeo, startMat);
+        startMesh.position.copy(pts3d[0]);
+        this._navGroup.add(startMesh);
+
+        // End marker (red sphere)
+        const endGeo = new THREE.SphereGeometry(0.5, 12, 12);
+        const endMat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
+        const endMesh = new THREE.Mesh(endGeo, endMat);
+        endMesh.position.copy(pts3d[pts3d.length - 1]);
+        this._navGroup.add(endMesh);
+
+        // Distance label at midpoint
+        const midIdx = Math.floor(pts3d.length / 2);
+        let totalDist = 0;
+        for (let i = 1; i < pts3d.length; i++) totalDist += pts3d[i].distanceTo(pts3d[i - 1]);
+        const midPos = pts3d[midIdx].clone();
+        midPos.y += 2;
+        this._addMeasureLabel(midPos, `${totalDist.toFixed(1)}m`);
+
+        this.scene.add(this._navGroup);
+    }
+
+    clearNavPath() {
+        if (this._navGroup) {
+            this.scene.remove(this._navGroup);
+            this._navGroup.traverse(c => {
+                if (c.geometry) c.geometry.dispose();
+                if (c.material) {
+                    if (c.material.map) c.material.map.dispose();
+                    c.material.dispose();
+                }
+            });
+            this._navGroup = null;
+        }
+    }
+
+    // ── Visibility Heatmap (Section 4.8) ─────────────────
+
+    renderVisibilityHeatmap(heatmapData, gridRes = 2.0) {
+        this.clearVisibilityHeatmap();
+        if (!heatmapData || heatmapData.length === 0) return;
+
+        this._visGroup = new THREE.Group();
+        this._visGroup.name = '__visibility_heatmap';
+
+        const cellSize = gridRes * 0.9; // slight gap between cells
+        const geo = new THREE.PlaneGeometry(cellSize, cellSize);
+        geo.rotateX(-Math.PI / 2); // face up
+
+        // Find max hit count for normalization
+        const maxHits = Math.max(1, ...heatmapData.map(c => c.hit_count || 0));
+
+        for (const cell of heatmapData) {
+            let color, opacity;
+            if (cell.visible) {
+                // Green gradient based on hit count
+                const t = (cell.hit_count || 1) / maxHits;
+                color = new THREE.Color().setHSL(0.33 * t, 0.9, 0.5);
+                opacity = 0.3 + 0.3 * t;
+            } else {
+                // Red for blind spots
+                color = new THREE.Color(0xff2222);
+                opacity = 0.25;
+            }
+
+            const mat = new THREE.MeshBasicMaterial({
+                color, transparent: true, opacity, side: THREE.DoubleSide,
+            });
+            const mesh = new THREE.Mesh(geo.clone(), mat);
+            mesh.position.set(cell.x, 0.2, -cell.z); // Y-up, negate Z
+            this._visGroup.add(mesh);
+        }
+
+        this.scene.add(this._visGroup);
+        console.log(`[SceneViewer] Visibility heatmap: ${heatmapData.length} cells`);
+    }
+
+    renderSensorMarkers(sensors) {
+        if (!this._visGroup) {
+            this._visGroup = new THREE.Group();
+            this._visGroup.name = '__visibility_heatmap';
+            this.scene.add(this._visGroup);
+        }
+        for (const s of sensors) {
+            const pos = s.position || [0, 3, 0];
+            const geo = new THREE.ConeGeometry(0.8, 1.5, 8);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+            const cone = new THREE.Mesh(geo, mat);
+            cone.position.set(pos[0], pos[1] + 0.75, -(pos[2] || 0));
+            this._visGroup.add(cone);
+
+            // FOV arc indicator
+            const maxDist = s.max_distance || 100;
+            const hfov = (s.hfov || 360) * Math.PI / 180;
+            const arcGeo = new THREE.RingGeometry(maxDist * 0.1, maxDist, 32, 1, 0, hfov);
+            arcGeo.rotateX(-Math.PI / 2);
+            const arcMat = new THREE.MeshBasicMaterial({
+                color: 0xffaa00, transparent: true, opacity: 0.15, side: THREE.DoubleSide
+            });
+            const arc = new THREE.Mesh(arcGeo, arcMat);
+            arc.position.set(pos[0], 0.3, -(pos[2] || 0));
+            const yawRad = (s.yaw || 0) * Math.PI / 180;
+            arc.rotation.y = -yawRad + Math.PI / 2 - hfov / 2;
+            this._visGroup.add(arc);
+        }
+    }
+
+    clearVisibilityHeatmap() {
+        if (this._visGroup) {
+            this.scene.remove(this._visGroup);
+            this._visGroup.traverse(c => {
+                if (c.geometry) c.geometry.dispose();
+                if (c.material) c.material.dispose();
+            });
+            this._visGroup = null;
+        }
+    }
+
+    // ── Accessibility Heatmap (Section 4.7) ──────────────
+
+    renderAccessibilityHeatmap(cells, gridRes = 1.0, maxTime = 300) {
+        this.clearVisibilityHeatmap(); // reuse vis group
+        if (!cells || cells.length === 0) return;
+
+        this._visGroup = new THREE.Group();
+        this._visGroup.name = '__accessibility_heatmap';
+
+        const cellSize = gridRes * 0.9;
+        const geo = new THREE.PlaneGeometry(cellSize, cellSize);
+        geo.rotateX(-Math.PI / 2);
+
+        for (const cell of cells) {
+            // Color gradient: green (close) → yellow → red (far)
+            const t = Math.min(cell.time_s / maxTime, 1.0);
+            const color = new THREE.Color().setHSL(0.33 * (1 - t), 0.9, 0.45);
+            const opacity = 0.2 + 0.3 * (1 - t);
+
+            const mat = new THREE.MeshBasicMaterial({
+                color, transparent: true, opacity, side: THREE.DoubleSide,
+            });
+            const mesh = new THREE.Mesh(geo.clone(), mat);
+            mesh.position.set(cell.x, 0.15, -cell.z);
+            this._visGroup.add(mesh);
+        }
+
+        // Start point marker
+        if (cells.length > 0) {
+            const start = cells.find(c => c.distance === 0) || cells[0];
+            const sGeo = new THREE.SphereGeometry(0.6, 12, 12);
+            const sMat = new THREE.MeshBasicMaterial({ color: 0x44ff44 });
+            const sMesh = new THREE.Mesh(sGeo, sMat);
+            sMesh.position.set(start.x, 1, -start.z);
+            this._visGroup.add(sMesh);
+        }
+
+        this.scene.add(this._visGroup);
+        console.log(`[SceneViewer] Accessibility heatmap: ${cells.length} reachable cells`);
+    }
+
+    // ── Floating Origin (Section 4.3) ────────────────────
+
+    _checkFloatingOrigin() {
+        if (!this.camera || !this._tileGroup) return;
+        const cx = this.camera.position.x;
+        const cz = this.camera.position.z;
+        const dist = Math.sqrt(cx * cx + cz * cz);
+
+        if (dist > this._floatingOriginThreshold) {
+            const dx = -cx;
+            const dz = -cz;
+            // Shift all scene root children
+            this.scene.children.forEach(child => {
+                if (child.isCamera || child === this.transformControls) return;
+                child.position.x += dx;
+                child.position.z += dz;
+            });
+            // Shift camera + controls target
+            this.camera.position.x += dx;
+            this.camera.position.z += dz;
+            this.controls.target.x += dx;
+            this.controls.target.z += dz;
+            // Track cumulative offset for coordinate conversion
+            this._originOffset.x -= dx;
+            this._originOffset.z -= dz;
+            console.log(`[FloatingOrigin] Shifted by (${dx.toFixed(1)}, ${dz.toFixed(1)}), cumulative: (${this._originOffset.x.toFixed(1)}, ${this._originOffset.z.toFixed(1)})`);
+        }
+    }
+
+    getWorldPosition(localX, localZ) {
+        return { x: localX + this._originOffset.x, z: localZ + this._originOffset.z };
+    }
+
     // ── Cleanup ────────────────────────────────────────────
 
     clearObjects() {
@@ -949,6 +1630,39 @@ class SceneViewer {
         toRemove.forEach(l => this.scene.remove(l));
     }
 
+    highlightTile(tileId) {
+        // Remove previous tile highlight
+        if (this._tileHighlight) {
+            this.scene.remove(this._tileHighlight);
+            this._tileHighlight.geometry?.dispose();
+            this._tileHighlight.material?.dispose();
+            this._tileHighlight = null;
+        }
+        if (!tileId) return;
+
+        // Find the tile object in scene by name match
+        let target = null;
+        this.scene.traverse(obj => {
+            if (obj.isMesh && obj.name && obj.name.includes(tileId)) {
+                target = obj;
+            }
+        });
+        if (!target) return;
+
+        // Create orange wireframe overlay
+        const geo = target.geometry.clone();
+        const mat = new THREE.MeshBasicMaterial({
+            color: 0xf5a623, wireframe: true, transparent: true, opacity: 0.4,
+        });
+        const highlight = new THREE.Mesh(geo, mat);
+        highlight.position.copy(target.position);
+        highlight.rotation.copy(target.rotation);
+        highlight.scale.copy(target.scale);
+        highlight.raycast = () => {};
+        this.scene.add(highlight);
+        this._tileHighlight = highlight;
+    }
+
     dispose() {
         this._stopLODUpgradeLoop();
         if (this.animId) { cancelAnimationFrame(this.animId); this.animId = null; }
@@ -964,6 +1678,11 @@ class SceneViewer {
             this.renderer = null;
         }
         this.clearObjects();
+        this.clearFootprints();
+        this.clearMeasurements();
+        this.clearNavPath();
+        this.clearVisibilityHeatmap();
+        this.clearBuildingBBox();
         this.outlineMat.dispose();
         this._initialized = false;
     }

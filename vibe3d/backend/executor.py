@@ -331,6 +331,7 @@ class PlanExecutor:
         "create_script", "create_shader", "create_scriptable_object",
         "modify_scriptable_object", "run_tests", "execute_menu_item",
         "manage_components", "manage_editor", "manage_material",
+        "_mesh_edit_tile",
     })
 
     # Tools that act as synchronization barriers (wait for previous work)
@@ -572,6 +573,25 @@ class PlanExecutor:
             tool = cmd.get("tool", "")
             params = cmd.get("params", {})
             retries = self.MAX_RETRIES if tool in self.RETRYABLE_TOOLS else 0
+
+            # Special handler for mesh_edit_tile (REST API, not MCP)
+            if tool == "_mesh_edit_tile":
+                try:
+                    from .drone_pipeline.mesh_edit_manager import get_manager
+                    mgr = get_manager()
+                    job_id = mgr.start_job(
+                        tile_id=params.get("tile_id", ""),
+                        preset=params.get("preset", "pack_for_unity"),
+                        project_dir=params.get("project_dir", ""),
+                        params=params.get("params", {}),
+                    )
+                    details.append({"tool": tool, "success": True, "job_id": job_id})
+                    success += 1
+                    logger.info(f"[Executor] mesh_edit_tile: started job {job_id}")
+                except Exception as e:
+                    details.append({"tool": tool, "success": False, "error": str(e)})
+                    fail += 1
+                continue
 
             for attempt in range(1 + retries):
                 try:
